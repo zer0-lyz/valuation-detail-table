@@ -1,0 +1,9 @@
+[project]
+name = "financial-normalizer"
+version = "0.1.0"
+description = "非标财务资料标准化工具 - Guess & Apply 两步法"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1.0",
+    "pandas>=2.0.0",
+]

@@ -1,0 +1,191 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created_at": "2026-05-24",
+    "description": "规则清单文件——每条A级/B级规则的可执行规格映射，用于断言覆盖率检测。规则从'应该怎么做'变为'只能这么做'的物理载体。",
+    "principle": "每条A级规则必须对应一段代码断言，无断言=未覆盖=告警。覆盖率<100%=Gate不通过。"
+  },
+  "rules": {
+    "DT-0": {
+      "level": "A",
+      "description": "零幻觉原则：每个数值必须有具体数据支撑",
+      "assert_fn": "_assert_data_source_traced",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-46": {
+      "level": "A",
+      "description": "业务内容与发生日期严禁混淆：资产C=文字/D=日期；负债C=日期/D=文字",
+      "assert_fn": "_validate_col_sequence",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-66": {
+      "level": "A",
+      "description": "全列位校验：填写每个Sheet前必须读取表头定位",
+      "assert_fn": "_validate_col_map",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-90": {
+      "level": "A",
+      "description": "表头行数据侵入阻断：多行表头子表头行严禁写入数值",
+      "assert_fn": "_assert_header_intact",
+      "params": {"max_data_start_row": 5},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-97": {
+      "level": "A",
+      "description": "写入后回读验证：检测静默写入失败",
+      "assert_fn": "_read_back_verify",
+      "params": {"tolerance": 0.01},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-120": {
+      "level": "A",
+      "description": "smart_insert_row强制：禁止裸insert_rows",
+      "assert_fn": "_assert_smart_insert_used",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-125": {
+      "level": "A",
+      "description": "MergedCell安全写入：禁止unmerge_all",
+      "assert_fn": "_safe_write_cell",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-136": {
+      "level": "A",
+      "description": "强制动态列位映射：禁止硬编码列号",
+      "assert_fn": "_assert_no_hardcoded_cols",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-139": {
+      "level": "A",
+      "description": "BS解析后强制自校验：资产=负债+权益±1元",
+      "assert_fn": "_validate_bs_equation",
+      "params": {"tolerance": 1.0},
+      "phase": 0,
+      "gate": "G0",
+      "coverage_status": "implemented"
+    },
+    "DT-122": {
+      "level": "A",
+      "description": "禁止下派执行：全流程MUST由主会话Agent自行执行",
+      "assert_fn": "_assert_no_sub_agent_dispatch",
+      "params": {},
+      "phase": "all",
+      "gate": "G0",
+      "coverage_status": "implemented"
+    },
+    "DT-151": {
+      "level": "A",
+      "description": "坏账准备行自动填写：账面价值=-|金额|，评估价值=0",
+      "assert_fn": "_assert_bad_debt_row",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-152": {
+      "level": "A",
+      "description": "smart_insert_row物理封堵：fill_sheet内部自动调用",
+      "assert_fn": "_assert_smart_insert_internal",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-153": {
+      "level": "A",
+      "description": "sheet_col_map.json为唯一列位来源：禁止运行时推断",
+      "assert_fn": "_assert_col_map_from_json",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "implemented"
+    },
+    "DT-154": {
+      "level": "A",
+      "description": "数据源表头识别统一引擎：禁止Agent手写解析",
+      "assert_fn": "_assert_source_parser_used",
+      "params": {},
+      "phase": 0,
+      "gate": "G0",
+      "coverage_status": "implemented"
+    },
+    "DT-155": {
+      "level": "A",
+      "description": "幂等保护：fill前必须先clear目标区域，重复执行不叠加数据",
+      "assert_fn": "_assert_idempotent_clear",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "new",
+      "root_cause": "4-8-6电子设备K列原值3倍(2,559,557 vs 正确862,890)，因脚本重复执行追加数据"
+    },
+    "DT-156": {
+      "level": "A",
+      "description": "数据源去重：辅助余额表跨表去重，按dedup_key合并",
+      "assert_fn": "_assert_dedup_before_write",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "new",
+      "root_cause": "5-5应付账款34行重复，因辅助余额表多文件extend不去重"
+    },
+    "DT-157": {
+      "level": "A",
+      "description": "data_start_row必须从映射表取：禁止硬编码起始行",
+      "assert_fn": "_assert_start_row_from_map",
+      "params": {},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "new",
+      "root_cause": "4-8-6硬编码ds=7，而映射表data_start_row=6，导致表头被覆盖"
+    },
+    "DT-158": {
+      "level": "A",
+      "description": "每sheet填后即时勾稽：不等全部填完再核对",
+      "assert_fn": "_assert_per_sheet_reconciliation",
+      "params": {"tolerance": 1.0},
+      "phase": 2,
+      "gate": "G1",
+      "coverage_status": "new",
+      "root_cause": "5科目差异发现太晚(Phase 4才核对)，如果每sheet填后即时勾稽则当场发现"
+    },
+    "DT-159": {
+      "level": "A",
+      "description": "禁止下发子任务给Agent tool执行：子Agent不遵循任何规则，结果完全失控",
+      "assert_fn": "_assert_no_agent_tool_dispatch",
+      "params": {},
+      "phase": "all",
+      "gate": "G0",
+      "coverage_status": "new",
+      "root_cause": "子Agent无法继承SKILL.md规则上下文、Gate校验、教训库，独立执行必然违反所有强约束"
+    }
+  },
+  "assertion_coverage": {
+    "description": "断言覆盖率检测：fill_sheet()执行后自动扫描本文件中该Phase的所有A级规则，检查执行日志标记。任何A级规则未出现在执行日志中则告警'断言缺失'，覆盖率<100%则Gate不通过。",
+    "target_coverage": 1.0,
+    "check_fn": "rule_coverage_check"
+  }
+}

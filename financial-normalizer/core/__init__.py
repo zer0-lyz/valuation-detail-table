@@ -1,0 +1,1 @@
+"""financial-normalizer core package"""

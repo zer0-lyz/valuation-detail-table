@@ -1,0 +1,717 @@
+{
+  "_meta": {
+    "version": "0.1.0",
+    "desc": "列名变体 → 标准字段映射表。可编辑，guess 阶段自动匹配，apply 阶段加载使用。"
+  },
+  "trial_balance": {
+    "account_code": {
+      "label": "科目编码",
+      "variants": [
+        "科目代码",
+        "科目编码",
+        "科目编号",
+        "科目ID",
+        "ACCT",
+        "ACCT_CODE",
+        "account_code",
+        "code",
+        "编码"
+      ]
+    },
+    "account_name": {
+      "label": "科目名称",
+      "variants": [
+        "科目名称",
+        "科目",
+        "会计科目",
+        "科目名",
+        "名称",
+        "账目",
+        "account_name",
+        "name",
+        "subject"
+      ]
+    },
+    "opening_debit": {
+      "label": "期初借方余额",
+      "variants": [
+        "期初借方",
+        "期初借",
+        "年初借方",
+        "期初余额(借)",
+        "期初余额（借）",
+        "借(期初)",
+        "期初余额借方",
+        "年初余额借方"
+      ]
+    },
+    "opening_credit": {
+      "label": "期初贷方余额",
+      "variants": [
+        "期初贷方",
+        "期初贷",
+        "年初贷方",
+        "期初余额(贷)",
+        "期初余额（贷）",
+        "贷(期初)",
+        "期初余额贷方",
+        "年初余额贷方"
+      ]
+    },
+    "opening_balance": {
+      "label": "期初余额（不分方向）",
+      "variants": [
+        "期初余额",
+        "年初余额",
+        "期初数",
+        "年初数",
+        "opening_balance",
+        "opening"
+      ]
+    },
+    "current_debit": {
+      "label": "本期借方发生",
+      "variants": [
+        "本期借方",
+        "借方发生",
+        "借方发生额",
+        "本期借",
+        "借方",
+        "本月借方",
+        "借",
+        "current_debit",
+        "debit",
+        "本期发生借方",
+        "本月发生借方"
+      ]
+    },
+    "current_credit": {
+      "label": "本期贷方发生",
+      "variants": [
+        "本期贷方",
+        "贷方发生",
+        "贷方发生额",
+        "本期贷",
+        "贷方",
+        "本月贷方",
+        "贷",
+        "current_credit",
+        "credit",
+        "本期发生贷方",
+        "本月发生贷方"
+      ]
+    },
+    "closing_debit": {
+      "label": "期末借方余额",
+      "variants": [
+        "期末借方",
+        "期末借",
+        "年末借方",
+        "期末余额(借)",
+        "期末余额（借）",
+        "借(期末)",
+        "期末余额借方",
+        "年末余额借方"
+      ]
+    },
+    "closing_credit": {
+      "label": "期末贷方余额",
+      "variants": [
+        "期末贷方",
+        "期末贷",
+        "年末贷方",
+        "期末余额(贷)",
+        "期末余额（贷）",
+        "贷(期末)",
+        "期末余额贷方",
+        "年末余额贷方"
+      ]
+    },
+    "closing_balance": {
+      "label": "期末余额（不分方向）",
+      "variants": [
+        "期末余额",
+        "年末余额",
+        "期末数",
+        "年末数",
+        "余额",
+        "closing_balance",
+        "balance"
+      ]
+    },
+    "level1_name": {
+      "label": "一级科目名称",
+      "variants": [
+        "一级科目",
+        "一级科目名称",
+        "一级",
+        "一级明细",
+        "大类科目",
+        "总账科目",
+        "一级名称"
+      ]
+    },
+    "level2_name": {
+      "label": "二级科目名称",
+      "variants": [
+        "二级科目",
+        "二级科目名称",
+        "二级",
+        "二级明细",
+        "子科目",
+        "明细科目",
+        "二级名称"
+      ]
+    },
+    "level3_name": {
+      "label": "三级科目名称",
+      "variants": [
+        "三级科目",
+        "三级科目名称",
+        "三级",
+        "三级明细",
+        "三级名称",
+        "末级科目"
+      ]
+    },
+    "currency": {
+      "label": "币种",
+      "variants": [
+        "币种",
+        "货币",
+        "货币种类",
+        "货币单位",
+        "币别",
+        "货币名称",
+        "currency",
+        "币种名称"
+      ]
+    }
+  },
+  "journal": {
+    "date": {
+      "label": "日期",
+      "variants": [
+        "日期",
+        "凭证日期",
+        "记账日期",
+        "date",
+        "Date",
+        "业务日期"
+      ]
+    },
+    "voucher_no": {
+      "label": "凭证号",
+      "variants": [
+        "凭证号",
+        "凭证字号",
+        "凭证编号",
+        "编号",
+        "voucher_no",
+        "凭证号码"
+      ]
+    },
+    "account_code": {
+      "label": "科目编码",
+      "variants": [
+        "科目代码",
+        "科目编码",
+        "科目编号",
+        "ACCT",
+        "account_code",
+        "code"
+      ]
+    },
+    "account_name": {
+      "label": "科目名称",
+      "variants": [
+        "科目名称",
+        "科目",
+        "会计科目",
+        "account_name",
+        "subject"
+      ]
+    },
+    "summary": {
+      "label": "摘要",
+      "variants": [
+        "摘要",
+        "业务摘要",
+        "摘要说明",
+        "description",
+        "memo",
+        "备注"
+      ]
+    },
+    "debit_amount": {
+      "label": "借方金额",
+      "variants": [
+        "借方金额",
+        "借方",
+        "借",
+        "借(金额)",
+        "借方发生",
+        "debit",
+        "debit_amount"
+      ]
+    },
+    "credit_amount": {
+      "label": "贷方金额",
+      "variants": [
+        "贷方金额",
+        "贷方",
+        "贷",
+        "贷(金额)",
+        "贷方发生",
+        "credit",
+        "credit_amount"
+      ]
+    },
+    "customer_supplier": {
+      "label": "往来单位",
+      "variants": [
+        "往来单位",
+        "客户",
+        "供应商",
+        "客商",
+        "单位名称",
+        "对方单位",
+        "客户名称",
+        "供货单位",
+        "客户/供应商"
+      ]
+    },
+    "department": {
+      "label": "部门",
+      "variants": [
+        "部门",
+        "所属部门",
+        "使用部门",
+        "责任部门",
+        "部门名称"
+      ]
+    },
+    "project_name": {
+      "label": "项目",
+      "variants": [
+        "项目",
+        "所属项目",
+        "工程",
+        "项目名称",
+        "工程名称",
+        "项目/工程"
+      ]
+    },
+    "personnel": {
+      "label": "经办人",
+      "variants": [
+        "经办人",
+        "经手人",
+        "报销人",
+        "负责人",
+        "操作人",
+        "制单人",
+        "记账人"
+      ]
+    },
+    "currency": {
+      "label": "币种",
+      "variants": [
+        "币种",
+        "货币",
+        "货币种类",
+        "货币单位",
+        "币别",
+        "货币名称",
+        "currency",
+        "币种名称"
+      ]
+    }
+  },
+  "balance_sheet": {
+    "item_name": {
+      "label": "项目名称",
+      "variants": [
+        "项目",
+        "项目名称",
+        "项目",
+        "资产项目",
+        "负债项目",
+        "报表项目",
+        "item",
+        "item_name"
+      ]
+    },
+    "closing_balance": {
+      "label": "期末余额",
+      "variants": [
+        "期末余额",
+        "期末数",
+        "年末数",
+        "期末",
+        "closing_balance"
+      ]
+    },
+    "opening_balance": {
+      "label": "期初余额",
+      "variants": [
+        "期初余额",
+        "期初数",
+        "年初数",
+        "期初",
+        "opening_balance"
+      ]
+    },
+    "item_category": {
+      "label": "项目类别",
+      "variants": [
+        "分类",
+        "类别",
+        "项目类别",
+        "科目类别",
+        "大类",
+        "类别名称"
+      ]
+    },
+    "item_direction": {
+      "label": "方向",
+      "variants": [
+        "方向",
+        "借贷方向",
+        "余额方向",
+        "借/贷",
+        "借或贷",
+        "dr/cr"
+      ]
+    },
+    "currency": {
+      "label": "币种",
+      "variants": [
+        "币种",
+        "货币",
+        "货币种类",
+        "货币单位",
+        "币别",
+        "货币名称",
+        "currency",
+        "币种名称"
+      ]
+    }
+  },
+  "fixed_asset": {
+    "asset_code": {
+      "label": "资产编码",
+      "variants": [
+        "资产编码",
+        "资产编号",
+        "资产代码",
+        "资产ID",
+        "卡片编号",
+        "固定资产编号",
+        "设备编号",
+        "编号",
+        "asset_code",
+        "asset_id"
+      ]
+    },
+    "asset_name": {
+      "label": "资产名称",
+      "variants": [
+        "资产名称",
+        "固定资产名称",
+        "设备名称",
+        "名称",
+        "asset_name"
+      ]
+    },
+    "asset_category": {
+      "label": "资产类别",
+      "variants": [
+        "资产类别",
+        "资产分类",
+        "类别",
+        "分类",
+        "固定资产类别",
+        "设备类别"
+      ]
+    },
+    "specification": {
+      "label": "规格型号",
+      "variants": [
+        "规格型号",
+        "规格",
+        "型号",
+        "规格/型号",
+        "技术参数",
+        "spec"
+      ]
+    },
+    "quantity": {
+      "label": "数量",
+      "variants": [
+        "数量",
+        "台数",
+        "套数",
+        "quantity",
+        "qty"
+      ]
+    },
+    "acquisition_date": {
+      "label": "取得日期",
+      "variants": [
+        "取得日期",
+        "入账日期",
+        "购置日期",
+        "购买日期",
+        "采购日期",
+        "购建日期",
+        "增加日期"
+      ]
+    },
+    "original_value": {
+      "label": "原值",
+      "variants": [
+        "原值",
+        "原价",
+        "资产原值",
+        "账面原值",
+        "入账原值",
+        "购置原值",
+        "原值(元)",
+        "original_value",
+        "original cost"
+      ]
+    },
+    "accumulated_depreciation": {
+      "label": "累计折旧",
+      "variants": [
+        "累计折旧",
+        "折旧",
+        "已提折旧",
+        "账面折旧",
+        "累计折旧额",
+        "折旧累计",
+        "累计折旧(元)",
+        "accumulated_depreciation",
+        "acc_dep"
+      ]
+    },
+    "net_value": {
+      "label": "净值",
+      "variants": [
+        "净值",
+        "账面净值",
+        "资产净值",
+        "折余价值",
+        "净额",
+        "net_value",
+        "net book value"
+      ]
+    },
+    "department": {
+      "label": "使用部门",
+      "variants": [
+        "使用部门",
+        "管理部门",
+        "归口部门",
+        "部门",
+        "责任部门",
+        "所属部门"
+      ]
+    },
+    "location": {
+      "label": "存放地点",
+      "variants": [
+        "存放地点",
+        "使用地点",
+        "地点",
+        "所在地",
+        "资产位置",
+        "存放位置"
+      ]
+    },
+    "depreciation_method": {
+      "label": "折旧方法",
+      "variants": [
+        "折旧方法",
+        "折旧方式",
+        "计提方法",
+        "折旧法",
+        "方法"
+      ]
+    },
+    "depreciation_life": {
+      "label": "折旧年限",
+      "variants": [
+        "折旧年限",
+        "使用年限",
+        "预计使用年限",
+        "年限",
+        "寿命",
+        "折旧年"
+      ]
+    },
+    "residual_rate": {
+      "label": "残值率",
+      "variants": [
+        "残值率",
+        "净残值率",
+        "预计净残值率",
+        "残值",
+        "残值比例"
+      ]
+    },
+    "monthly_depreciation": {
+      "label": "月折旧额",
+      "variants": [
+        "月折旧额",
+        "月折旧",
+        "每月折旧",
+        "月提折旧",
+        "月折旧金额"
+      ]
+    },
+    "status": {
+      "label": "资产状态",
+      "variants": [
+        "资产状态",
+        "使用状态",
+        "状态",
+        "资产状况",
+        "状况",
+        "在用状态"
+      ]
+    },
+    "start_date": {
+      "label": "启用日期",
+      "variants": [
+        "启用日期",
+        "开始使用日期",
+        "开始计提日期",
+        "使用日期",
+        "投产日期"
+      ]
+    },
+    "supplier": {
+      "label": "供应商",
+      "variants": [
+        "供应商",
+        "生产厂商",
+        "厂商",
+        "供货商",
+        "厂家",
+        "制造厂商",
+        "生产厂家",
+        "采购来源"
+      ]
+    },
+    "impairment_amount": {
+      "label": "减值准备",
+      "variants": [
+        "减值准备",
+        "减值金额",
+        "资产减值",
+        "固定资产减值",
+        "减值",
+        "减值准备余额",
+        "impairment"
+      ]
+    },
+    "unit": {
+      "label": "单位",
+      "variants": [
+        "单位",
+        "计量单位",
+        "数量单位",
+        "单位名称",
+        "uom"
+      ]
+    },
+    "currency": {
+      "label": "币种",
+      "variants": [
+        "币种",
+        "货币",
+        "货币种类",
+        "货币单位",
+        "币别",
+        "货币名称",
+        "currency",
+        "币种名称"
+      ]
+    }
+  },
+  "income_statement": {
+    "item_name": {
+      "label": "项目名称",
+      "variants": [
+        "项目",
+        "项目名称",
+        "报表项目",
+        "项目内容",
+        "利润项目",
+        "item",
+        "item_name"
+      ]
+    },
+    "current_period": {
+      "label": "本期金额",
+      "variants": [
+        "本期金额",
+        "本期",
+        "本期数",
+        "本期发生额",
+        "本月数",
+        "current_period"
+      ]
+    },
+    "cumulative": {
+      "label": "本年累计",
+      "variants": [
+        "本年累计",
+        "本年累计数",
+        "本年累计金额",
+        "累计",
+        "本年累计发生额",
+        "累计金额",
+        "年初至今",
+        "cumulative"
+      ]
+    },
+    "item_category": {
+      "label": "项目类别",
+      "variants": [
+        "分类",
+        "类别",
+        "项目类别",
+        "科目类别",
+        "大类",
+        "类别名称"
+      ]
+    },
+    "item_direction": {
+      "label": "方向",
+      "variants": [
+        "方向",
+        "借贷方向",
+        "余额方向",
+        "借/贷",
+        "借或贷",
+        "dr/cr"
+      ]
+    },
+    "currency": {
+      "label": "币种",
+      "variants": [
+        "币种",
+        "货币",
+        "货币种类",
+        "货币单位",
+        "币别",
+        "货币名称",
+        "currency",
+        "币种名称"
+      ]
+    }
+  }
+}

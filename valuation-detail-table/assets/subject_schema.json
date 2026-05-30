@@ -1,0 +1,1608 @@
+{
+  "_meta": {
+    "version": "3.2",
+    "created_at": "2026-05-26",
+    "description": "科目数据源Schema v3.0——基于模板v1.90全量覆盖67个子Sheet，增加contra_account备抵科目联动和accounting_ref会计知识引用。修正STANDARD_MAP映射错误(P13)，补齐缺失Sheet(P11)",
+    "updated_at": "2026-05-29",
+    "changes": [
+      "reconcile_to: closing_balance → balance（字段名修复，44处）",
+      "合并 STANDARD_MAP 独有编码: 1231,1241,1601,1603,1703,1821,2201,260001,2802",
+      "修正 1601 从 4-8-6电子设备 移到 4-8-4机器设备",
+      "新增编码: 2001,2002,2102,2502",
+      "补充缺失Sheet: 3-13其他流动资产, 5-13其他流动负债",
+      "Sheet名称对齐模板: 7个重命名",
+      "补充模板存在但schema缺失的业务Sheet: 32个"
+    ]
+  },
+  "subjects": {
+    "3-1-1现金": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1001",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1001:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-1-2银行存款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "pdf_extractions.json",
+      "secondary_filter": "bank_statements",
+      "source_code_prefix": "1002",
+      "dedup_key": [
+        "account_no"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1002:balance",
+      "data_template": "bank_deposit",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "special_rules": [
+        "DT-65: 银行存款关键值校对",
+        "DT-104: 银行存款逐行展开禁止汇总",
+        "DT-134: 银行对账单结构化提取为逐行数据源"
+      ]
+    },
+    "3-1-3其他货币资金": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1012",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1012:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-10合同资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1122:balance"
+    },
+    "3-11持有待售资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1481:balance"
+    },
+    "3-12一年到期非流动资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1501",
+      "reconcile_to": "subjects.json:1501:balance"
+    },
+    "3-13其他流动资产": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1821",
+        "1483"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "leaf_sum",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-2-1-股票": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1101",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
+      "data_template": "financial_asset",
+      "accounting_ref": "financial_asset_1101",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "filter_rule": "名称含'股票'"
+    },
+    "3-2-2-债券": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1101",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
+      "data_template": "financial_asset",
+      "accounting_ref": "financial_asset_1101",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "filter_rule": "名称含'债券'"
+    },
+    "3-2-3-基金": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1101",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
+      "data_template": "financial_asset",
+      "accounting_ref": "financial_asset_1101",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "filter_rule": "默认(无法分类时填入此Sheet)"
+    },
+    "3-3衍生金融资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1101",
+      "reconcile_to": "subjects.json:1101:balance"
+    },
+    "3-4应收票据": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1121",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1121:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-5应收账款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "应收",
+      "source_code_prefix": "1122",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1122:balance",
+      "data_template": "counterparty",
+      "has_bad_debt": true,
+      "accounting_ref": "bad_debt_1231",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-6应收款项融资": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1121:balance"
+    },
+    "3-7预付款项": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "预付",
+      "source_code_prefix": "1123",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1123:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-8-1应收利息": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1132",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1132:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-8-2应收股利": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1131",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1131:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-8-3其他应收款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "其他应收",
+      "source_code_prefix": [
+        "1221",
+        "1241"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1221:balance",
+      "data_template": "counterparty",
+      "has_bad_debt": true,
+      "accounting_ref": "bad_debt_1231",
+      "idempotent_clear_range": {
+        "start_row": 7,
+        "end_row": "last_data"
+      }
+    },
+    "3-9-1在途物资": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "inventory_detail",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1402",
+      "reconcile_to": "subjects.json:1402:balance"
+    },
+    "3-9-2原材料": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1403",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1403:balance",
+      "data_template": "inventory_detail",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-9-3在库周转材料": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1411",
+      "reconcile_to": "subjects.json:1411:balance"
+    },
+    "3-9-4委托加工物资": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1408",
+      "reconcile_to": "subjects.json:1408:balance"
+    },
+    "3-9-5产成品（库存商品）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1405",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1405:balance",
+      "data_template": "inventory_detail",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-9-6在产品（自制半成品）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "5001",
+        "5002",
+        "5201"
+      ],
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "leaf_sum",
+      "data_template": "inventory_detail",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "3-9-7发出商品": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1406",
+      "reconcile_to": "subjects.json:1406:balance"
+    },
+    "3-9-8在用周转材料": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1411",
+      "reconcile_to": "subjects.json:1411:balance"
+    },
+    "3-9-9合同履约成本": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "5001",
+      "reconcile_to": "subjects.json:5001:balance"
+    },
+    "3-9存货汇总": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1401",
+        "1403",
+        "1405",
+        "1408",
+        "5001",
+        "5002"
+      ],
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "bs_balances.json:存货:balance",
+      "data_template": "inventory_summary",
+      "accounting_ref": null,
+      "idempotent_clear_range": null
+    },
+    "4-10生产性生物资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1621:balance"
+    },
+    "4-11油气资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1631:balance"
+    },
+    "4-12使用权资产": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1700:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-13-1无形-土地": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1701",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1701:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1702",
+        "impairment": "1703"
+      },
+      "accounting_ref": "contra_account_1701",
+      "filter_rule": "名称含'土地'或'使用权(土地)'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-13-2无形-矿业权": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1701",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1701:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1702",
+        "impairment": "1703"
+      },
+      "accounting_ref": "contra_account_1701",
+      "filter_rule": "名称含'矿业'或'采矿权'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-13-3无形-其他": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1701",
+        "1703",
+        "1702"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1701:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1702",
+        "impairment": "1703"
+      },
+      "accounting_ref": "contra_account_1701",
+      "filter_rule": "默认(无法分类时填入此Sheet)",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-13无形资产汇总": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1701"
+      ],
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1701:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": null
+    },
+    "4-14开发支出": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1704",
+      "reconcile_to": "subjects.json:1704:balance"
+    },
+    "4-15商誉": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1711:balance"
+    },
+    "4-16长期待摊费用": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "code"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1801:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-17递延所得税资产": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1811",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1811:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-18其他非流动资产": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:1901:balance"
+    },
+    "4-1债权投资": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1501",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1501:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-2其他债权投资": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1503",
+      "reconcile_to": "subjects.json:1503:balance"
+    },
+    "4-3长期应收": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1531",
+      "reconcile_to": "subjects.json:1531:balance"
+    },
+    "4-4股权投资": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1511",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1511:balance",
+      "data_template": "counterparty",
+      "accounting_ref": "equity_investment_1511",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-5其他权益工具投资": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1511",
+      "reconcile_to": "subjects.json:1511:balance"
+    },
+    "4-6-1-股票": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1101",
+      "reconcile_to": "subjects.json:1101:balance"
+    },
+    "4-6-2-债券": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1501",
+      "reconcile_to": "subjects.json:1501:balance"
+    },
+    "4-6-3-基金": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": "1101",
+      "reconcile_to": "subjects.json:1101:balance"
+    },
+    "4-8-1房屋建筑物": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1601",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'房屋'或'建筑物'或'厂房'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-2构筑物": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1601",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'构筑'或'烟囱'或'水池'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-3管道沟槽": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1601",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'管道'或'沟槽'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-4机器设备": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1601"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'机器'或'设备'或'生产线'(默认)",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-5车辆": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1601",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'车辆'或'运输'或'汽车'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-6电子设备": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "equipment",
+      "contra_account": {
+        "depreciation": "1602",
+        "impairment": "1603"
+      },
+      "accounting_ref": "contra_account_1601",
+      "filter_rule": "名称含'电子'或'电脑'或'服务器'或'办公设备'",
+      "idempotent_clear_range": {
+        "start_row": 7,
+        "end_row": "last_data"
+      }
+    },
+    "4-8-7固定资产清理": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1606",
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1606:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-8固定资产汇总": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "1602"
+      ],
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1601:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": null
+    },
+    "4-9-1在建（土建）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1604",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1604:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "filter_rule": "名称含'土建'或'建筑'或'装修'",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-9-2在建（设备）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1604",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1604:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "filter_rule": "默认(无法分类时填入此Sheet)",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-9-3在建工程（工程物资）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1605",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1605:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "4-9在建工程汇总": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1604",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1604:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-10-1应付利息": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2231",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2231:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-10-2应付股利（利润）": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2232",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2232:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-10-3其他应付款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "其他应付款",
+      "source_code_prefix": [
+        "2241",
+        "2102"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "bs_balances.json:其他应付款:ending_balance",
+      "data_template": "counterparty",
+      "accounting_ref": "2102=衍生金融负债(财政部标准); 房地产企业210201结算中心借款在BS上并入其他应付款列示, 故归入此sheet. 勾稽等式: 210201 + 2241贷方 = BS其他应付款",
+      "idempotent_clear_range": {
+        "start_row": 7,
+        "end_row": "last_data"
+      },
+      "special_rules": [
+        "DT-218: 负数重分类(2241借方→其他应收款)"
+      ]
+    },
+    "5-11持有待售负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2245:balance"
+    },
+    "5-12一年到期非流动负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2501:balance"
+    },
+    "5-13其他流动负债": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "bs_balances.json:其他流动负债:ending_balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-1短期借款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": [
+        "2001",
+        "2002",
+        "2201"
+      ],
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "bs_balances.json:短期借款:ending_balance",
+      "data_template": "loan",
+      "accounting_ref": "2001=短期借款(财政部标准); 2102=衍生金融负债(非短期借款), 2201=应付票据(非短期借款). 注意: 2102/2201曾在旧版被错误映射至此sheet, 如企业将210201结算中心借款并入其他应付款则应移至5-10-3",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-2交易性金融负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2101:balance"
+    },
+    "5-3衍生金融负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2101:balance"
+    },
+    "5-4应付票据": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2201:balance"
+    },
+    "5-5应付账款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "应付账款",
+      "source_code_prefix": "2202",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2202:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-6预收款项": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "预收",
+      "source_code_prefix": "2203",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2203:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "5-7合同负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2203:balance"
+    },
+    "5-9应交税费": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2221",
+      "dedup_key": [
+        "code"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "bs_balances.json:应交税费:ending_balance",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "special_rules": [
+        "DT-87: 其他流动资产=应交税费借方余额重分类",
+        "DT-126: 应交税费BS口径拆分",
+        "DT-147: 应交税费逐税种填写+征税机关格式"
+      ]
+    },
+    "6-1长期借款": {
+      "primary_source": "subjects.json",
+      "secondary_source": "auxiliary_balance_all.json",
+      "secondary_filter": "长期借款",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2501:balance",
+      "data_template": "loan",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "6-2应付债券": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2502:balance"
+    },
+    "6-3租赁负债": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2600:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "6-4长期应付款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2701:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "6-5长期应付职工薪酬": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2211:balance"
+    },
+    "6-6预计负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2801:balance"
+    },
+    "6-7递延收益": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2401:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "6-8递延所得税负债": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:2901:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "6-9其他非流动负债": {
+      "primary_source": "subjects.json",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "source_code_prefix": null,
+      "reconcile_to": "subjects.json:2901:balance"
+    },
+    "5-8职工薪酬": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2211",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2211:balance",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      }
+    },
+    "净资产汇总": {
+      "primary_source": "bs_balances.json",
+      "source_code_prefix": [
+        "4001",
+        "4002",
+        "4101",
+        "4103",
+        "4104"
+      ],
+      "dedup_key": [
+        "label"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "bs_balances.json:净资产:ending_balance",
+      "data_template": "inventory_summary",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "_desc": "所有者权益类科目汇总，账面价值来自资产负债表"
+    }
+  },
+  "dedup_strategy_definitions": {
+    "keep_first": "按dedup_key去重，保留首次出现的记录",
+    "primary_only_if_reconciled": "如果primary_source数据能勾稽到reconcile_to，仅用primary_source；否则补充secondary_source但需去重",
+    "merge_by_key": "按dedup_key合并同键记录的金额"
+  },
+  "data_template_definitions": {
+    "counterparty": {
+      "description": "往来科目模板：结算对象/业务内容/发生日期/账面价值/评估价值/备注",
+      "required_fields": [
+        "settlement",
+        "business",
+        "date",
+        "book_value",
+        "assessed_value"
+      ],
+      "sheet_types": [
+        "3-5",
+        "3-7",
+        "3-8",
+        "5-5",
+        "5-6",
+        "5-10"
+      ]
+    },
+    "bank_deposit": {
+      "description": "银行存款模板：户名/币种/汇率/账面价值/评估价值/备注",
+      "required_fields": [
+        "settlement",
+        "currency",
+        "exchange_rate",
+        "book_value",
+        "assessed_value"
+      ],
+      "sheet_types": [
+        "3-1-2"
+      ]
+    },
+    "equipment": {
+      "description": "设备模板：序号/名称/规格型号/生产厂家/数量/账面原值/累计折旧/账面净值/评估价值",
+      "required_fields": [
+        "seq",
+        "asset_name",
+        "spec",
+        "manufacturer",
+        "quantity",
+        "original_value",
+        "accumulated_depreciation",
+        "net_value",
+        "assessed_value"
+      ],
+      "sheet_types": [
+        "4-8-1",
+        "4-8-2",
+        "4-8-3",
+        "4-8-4",
+        "4-8-5",
+        "4-8-6",
+        "4-13-1",
+        "4-13-2",
+        "4-13-3"
+      ],
+      "dual_header": true,
+      "description_note": "双行表头Sheet: C11=账面原值, C12=账面净值(设备类); 或 C11=账面原值, C12=账面净值(无形资产类)"
+    },
+    "financial_asset": {
+      "description": "金融资产模板：名称/数量/成本/公允价值变动/账面价值/评估价值",
+      "required_fields": [
+        "asset_name",
+        "quantity",
+        "cost",
+        "fair_value_change",
+        "book_value",
+        "assessed_value"
+      ],
+      "sheet_types": [
+        "3-2-1",
+        "3-2-2",
+        "3-2-3"
+      ]
+    },
+    "inventory_detail": {
+      "description": "存货明细模板：名称/数量/金额",
+      "required_fields": [
+        "name",
+        "quantity",
+        "amount"
+      ],
+      "sheet_types": [
+        "3-9-1",
+        "3-9-5",
+        "3-9-6"
+      ]
+    },
+    "inventory_summary": {
+      "description": "存货汇总模板：科目/金额",
+      "required_fields": [
+        "name",
+        "amount"
+      ],
+      "sheet_types": [
+        "3-9"
+      ]
+    },
+    "tax_payable": {
+      "description": "应交税费模板：税种/征税机关/金额",
+      "required_fields": [
+        "tax_type",
+        "authority",
+        "amount"
+      ],
+      "sheet_types": [
+        "5-9"
+      ]
+    },
+    "loan": {
+      "description": "借款模板：放款银行/利率/金额/到期日",
+      "required_fields": [
+        "lender",
+        "rate",
+        "amount",
+        "maturity"
+      ],
+      "sheet_types": [
+        "5-1",
+        "6-1"
+      ]
+    }
+  },
+  "accounting_refs": {
+    "contra_account_1601": {
+      "title": "固定资产备抵科目联动",
+      "rule": "账面原值=1601借方余额; 累计折旧=1602贷方余额(取绝对值); 账面净值=原值-折旧; 评估价值=账面净值(默认)",
+      "dual_header": "C11=账面原值, C12=账面净值"
+    },
+    "contra_account_1701": {
+      "title": "无形资产备抵科目联动",
+      "rule": "账面原值=1701借方余额; 累计摊销=1702贷方余额(取绝对值); 账面净值=原值-摊销; 评估价值=账面净值(默认)",
+      "dual_header": "C11=账面原值, C12=账面净值"
+    },
+    "bad_debt_1231": {
+      "title": "坏账准备行填写规则",
+      "rule": "坏账准备行: 账面价值=+|坏账金额|, 评估价值=0; 预计风险行: 账面价值=0, 评估价值=+|减值评估值|; 合计2行由公式自动计算",
+      "rule_source": "DT-151"
+    },
+    "financial_asset_1101": {
+      "title": "交易性金融资产分类规则",
+      "rule": "不确定分类时默认填入3-2-3基金; 股票→3-2-1, 债券→3-2-2"
+    },
+    "equity_investment_1511": {
+      "title": "长期股权投资填写规则",
+      "rule": "按被投资单位逐行列示; 填写持股比例/投资成本/账面价值/评估价值"
+    },
+    "tax_payable_2221": {
+      "title": "应交税费评估值规则",
+      "rule": "评估价值=账面价值(同符号同金额); 借方余额(留抵)显示为负数; BS已对平时不做重分类",
+      "critical": "禁止abs(账面价值)→评估价值"
+    }
+  }
+}

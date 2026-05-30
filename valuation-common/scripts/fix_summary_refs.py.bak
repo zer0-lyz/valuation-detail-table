@@ -1,0 +1,372 @@
+"""
+fix_summary_refs.py — 修复汇总表跨Sheet引用行号偏移
+
+问题根因（DT-182b）：
+  smart_insert_row() 在明细表的数据区（表头~合计之间）插入行后，
+  合计行位置下移。但汇总表中的跨Sheet公式引用（如 '4-8-4机器设备'!K34）
+  是硬编码的，openpyxl 不会自动更新它们。
+  
+  结果：汇总表引用的行号不再指向正确的合计行，导致汇总数据错误。
+
+解决方案：
+  Phase 2 每个明细表填写完成后，调用本函数更新所有汇总表中
+  指向该明细表的跨Sheet引用，确保它们指向正确的合计行位置。
+
+使用：
+  from fix_summary_refs import fix_summary_sheet_refs
+  
+  # 在 fill_sheet() 之后调用
+  fix_summary_sheet_refs(wb, filled_sheet_name, original_total_row)
+
+v1.0 (2026-05-29): 初始版本
+  - 自动扫描所有汇总Sheet，找到指向filled_sheet的引用
+  - 根据实际合计行位置修正行号
+  - 支持A列合计1/合计2标记定位
+"""
+
+import re
+from openpyxl.utils import column_index_from_string, get_column_letter
+
+
+def find_total_rows(ws):
+    """找到Sheet中的合计行位置
+    
+    通过A列标记定位：合计1 / 坏账准备 / 合计2
+    
+    Returns:
+        dict: {'total1': int, 'bad_debt': int|None, 'total2': int|None}
+    """
+    result = {'total1': None, 'bad_debt': None, 'total2': None}
+    for r in range(1, ws.max_row + 1):
+        a = ws.cell(row=r, column=1).value
+        if a is None:
+            continue
+        av = str(a).strip()
+        if '合计1' in av:
+            result['total1'] = r
+        elif '坏账准备' in av or '减值准备' in av:
+            result['bad_debt'] = r
+        elif '合计2' in av:
+            result['total2'] = r
+        elif '预计损失' in av or '预计风险' in av:
+            result['provision'] = r
+    return result
+
+
+def is_summary_sheet(sheet_name):
+    """判断是否为汇总类Sheet（需要检查引用正确性）"""
+    keywords = ['汇总', '分类汇总']
+    return any(k in sheet_name for k in keywords)
+
+
+def get_sheet_dependencies(wb, summary_sheet_name):
+    """扫描汇总Sheet中的所有跨Sheet引用，返回 {detail_sheet: [(col, old_row, formula_str)]}"""
+    ws = wb[summary_sheet_name]
+    deps = {}
+    # Match patterns like: 'SheetName'!A1 or SheetName!A1 or 'SheetName'!$A$1
+    pattern = r"'([^']+)'!([A-Z]+)\$?(\d+)|(?<!\w)([A-Za-z0-9_\u4e00-\u9fff-]+)!([A-Z]+)\$?(\d+)"
+    
+    for r in range(1, ws.max_row + 1):
+        for c in range(1, min(ws.max_column + 1, 20)):
+            v = ws.cell(row=r, column=c).value
+            if not v or not isinstance(v, str) or '!' not in v:
+                continue
+            
+            # Find all cross-sheet references in this formula
+            matches = re.finditer(pattern, v)
+            for m in matches:
+                if m.group(1):  # Quoted sheet name
+                    sn = m.group(1)
+                    col_l = m.group(2)
+                    row_n = int(m.group(3))
+                else:  # Unquoted
+                    sn = m.group(4)
+                    col_l = m.group(5)
+                    row_n = int(m.group(6))
+                
+                if sn not in deps:
+                    deps[sn] = []
+                deps[sn].append({
+                    'summary_sheet': summary_sheet_name,
+                    'summary_row': r,
+                    'summary_col': c,
+                    'col_letter': col_l,
+                    'old_row': row_n,
+                    'full_formula': v,
+                })
+    
+    return deps
+
+
+def fix_summary_sheet_refs(wb, filled_sheet_name, original_total2_row=None):
+    """修复所有汇总表中指向 filled_sheet_name 的跨Sheet引用
+    
+    Args:
+        wb: openpyxl Workbook (已加载)
+        filled_sheet_name: 刚填写完的明细表Sheet名称
+        original_total2_row: 填写前的合计2行号（未插行前）。
+            如果为None，则假设插入后合计行位置不变。
+    
+    Returns:
+        dict: {'fixed': int, 'refs_checked': int, 'details': list}
+    """
+    if filled_sheet_name not in wb.sheetnames:
+        return {'fixed': 0, 'refs_checked': 0, 'details': [], 'error': f'Sheet {filled_sheet_name} not found'}
+    
+    ws_filled = wb[filled_sheet_name]
+    
+    # 找到填写后的实际合计行位置
+    totals = find_total_rows(ws_filled)
+    actual_total2 = totals.get('total2')
+    actual_total1 = totals.get('total1')
+    
+    if not actual_total2 and not actual_total1:
+        return {'fixed': 0, 'refs_checked': 0, 'details': [], 
+                'error': f'在 {filled_sheet_name} 中未找到合计行（A列标记）'}
+    
+    # 如果没有指定原始合计行，用合计1的位置
+    target_row = actual_total2 if actual_total2 else actual_total1
+    if actual_total2:
+        target_row_name = '合计2'
+    else:
+        target_row_name = '合计1'
+    
+    # 扫描所有汇总Sheet
+    total_fixed = 0
+    details = []
+    
+    for sn in wb.sheetnames:
+        if not is_summary_sheet(sn):
+            continue
+        
+        deps = get_sheet_dependencies(wb, sn)
+        if filled_sheet_name not in deps:
+            continue
+        
+        ws_summary = wb[sn]
+        refs = deps[filled_sheet_name]
+        
+        for ref in refs:
+            old_row = ref['old_row']
+            col = ref['summary_col']
+            row = ref['summary_row']
+            col_letter = ref['col_letter']
+            
+            if old_row != target_row:
+                # 需要修复！将旧行号替换为目标行号
+                old_formula = ws_summary.cell(row=row, column=col).value
+                if old_formula and isinstance(old_formula, str):
+                    # 只替换特定sheet的引用行号，不能全局替换
+                    # 构建精确替换：'SheetName'!A34 → 'SheetName'!A160
+                    old_ref_pattern = f"'{filled_sheet_name}'!{col_letter}{old_row}"
+                    new_ref = f"'{filled_sheet_name}'!{col_letter}{target_row}"
+                    
+                    # 也检查无引号形式
+                    old_ref_pattern2 = f"{filled_sheet_name}!{col_letter}{old_row}"
+                    new_ref2 = f"{filled_sheet_name}!{col_letter}{target_row}"
+                    
+                    new_formula = old_formula.replace(old_ref_pattern, new_ref)
+                    new_formula = new_formula.replace(old_ref_pattern2, new_ref2)
+                    
+                    if new_formula != old_formula:
+                        ws_summary.cell(row=row, column=col).value = new_formula
+                        total_fixed += 1
+                        details.append({
+                            'summary_sheet': sn,
+                            'summary_row': row,
+                            'summary_col': col,
+                            'old_ref': f"'{filled_sheet_name}'!{col_letter}{old_row}",
+                            'new_ref': f"'{filled_sheet_name}'!{col_letter}{target_row}",
+                        })
+    
+    return {
+        'fixed': total_fixed,
+        'refs_checked': len([d for sn2 in wb.sheetnames if is_summary_sheet(sn2) for d in get_sheet_dependencies(wb, sn2).get(filled_sheet_name, [])]),
+        'details': details,
+        'target_row': target_row,
+        'target_row_name': target_row_name,
+    }
+
+
+def fix_all_summary_refs(wb, sheet_names_filled=None):
+    """一次性修复所有Sheet的汇总引用（在全部Phase 2完成后调用）
+    
+    Args:
+        wb: openpyxl Workbook
+        sheet_names_filled: 已填写的Sheet列表，None=自动检测
+    
+    Returns:
+        dict: {'total_fixed': int, 'per_sheet': {sheet: fix_result}}
+    """
+    if sheet_names_filled is None:
+        # 自动检测：所有有合计2行的Sheet
+        sheet_names_filled = []
+        for sn in wb.sheetnames:
+            if not is_summary_sheet(sn):
+                totals = find_total_rows(wb[sn])
+                if totals.get('total2'):
+                    sheet_names_filled.append(sn)
+    
+    results = {}
+    total_fixed = 0
+    for sn in sheet_names_filled:
+        r = fix_summary_sheet_refs(wb, sn)
+        total_fixed += r.get('fixed', 0)
+        results[sn] = r
+    
+    return {'total_fixed': total_fixed, 'per_sheet': results}
+
+def fix_all_summary_refs_batch(wb):
+    """一键扫描+修复全部汇总表的跨Sheet引用（智能模式）
+
+    规则：
+    1. 仅修复金额列（E-P列）的引用
+    2. 跳过引用目标为汇总表/辅表的行（行项目引用保持不变）
+    3. 跳过偏移量<3行的引用（未插行=引用原本正确）
+    4. 仅当旧行号≠目标合计行号时修复
+
+    Returns:
+        dict: {'total_fixed': int, 'per_sheet': {sheet: fixed_count}}
+    """
+    import re
+
+    MONEY_COLS = {'E','F','G','H','I','J','K','L','M','N','O','P'}
+
+    def _is_detail(sn):
+        if any(k in sn for k in ['汇总', '辅-', '分类汇总', '设定信息', '公式数据表', '_BS对照']):
+            return False
+        return True
+
+    total_fixed = 0
+    per_sheet = {}
+
+    for sn in wb.sheetnames:
+        if not any(k in sn for k in ['汇总', '分类汇总']):
+            continue
+
+        ws = wb[sn]
+        sheet_fixed = 0
+
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, min(ws.max_column + 1, 20)):
+                v = ws.cell(row=r, column=c).value
+                if not v or not isinstance(v, str) or '!' not in v:
+                    continue
+
+                formula = v
+                pattern = r"'([^']+)'!([A-Z]+)(\d+)"
+                matches = list(re.finditer(pattern, formula))
+
+                for m in matches:
+                    detail_sn = m.group(1)
+                    col_l = m.group(2)
+                    ref_row = int(m.group(3))
+
+                    if detail_sn not in wb.sheetnames or not _is_detail(detail_sn):
+                        continue
+                    if col_l not in MONEY_COLS:
+                        continue
+
+                    totals = find_total_rows(wb[detail_sn])
+                    target_row = totals.get('total2') or totals.get('total1')
+                    if not target_row:
+                        continue
+                    if abs(ref_row - target_row) < 3:
+                        continue
+                    if ref_row != target_row:
+                        old_ref = "'" + detail_sn + "'!" + col_l + str(ref_row)
+                        new_ref = "'" + detail_sn + "'!" + col_l + str(target_row)
+                        if old_ref in formula:
+                            formula = formula.replace(old_ref, new_ref)
+                            sheet_fixed += 1
+
+                if formula != v:
+                    ws.cell(row=r, column=c).value = formula
+
+        if sheet_fixed > 0:
+            per_sheet[sn] = sheet_fixed
+            total_fixed += sheet_fixed
+
+    return {'total_fixed': total_fixed, 'per_sheet': per_sheet}
+
+def fix_intra_sheet_total2_formulas(wb):
+    """修复明细表内合计2行引用旧行号的公式（插行导致）
+    
+    smart_insert_row() 插入行后，合计2行中引用合计1/坏账准备行的
+    非SUM公式（如 H32-H33）不会被自动更新，需要手动修正。
+    
+    Returns:
+        dict: {sheet_name: fixed_count}
+    """
+    import re
+    
+    results = {}
+    for sn in wb.sheetnames:
+        if any(k in sn for k in ['\u6c47\u603b', '\u8f85-', '\u5206\u7c7b\u6c47\u603b',
+                                  '\u8bbe\u5b9a\u4fe1\u606f', '\u516c\u5f0f\u6570\u636e\u8868', '_BS\u5bf9\u7167']):
+            continue
+        
+        ws = wb[sn]
+        t1 = t2 = bd = None
+        for r in range(1, ws.max_row + 1):
+            a = ws.cell(row=r, column=1).value
+            if a is None: continue
+            av = str(a).strip()
+            if '\u5408\u8ba12' in av: t2 = r
+            elif '\u5408\u8ba11' in av: t1 = r
+            elif '\u574f\u8d26\u51c6\u5907' in av or '\u51cf\u503c\u51c6\u5907' in av: bd = r
+            elif '\u9884\u8ba1\u635f\u5931' in av or '\u9884\u8ba1\u98ce\u9669' in av: bd = r
+        
+        if not t2:
+            continue
+        if not t1 or not bd:
+            continue
+        
+        fixed = 0
+        
+        # Fix 合计2 row formulas
+        for c in range(1, min(ws.max_column + 1, 20)):
+            v = ws.cell(row=t2, column=c).value
+            if not v or not isinstance(v, str):
+                continue
+            old = v
+            
+            # Map old row numbers to new row numbers
+            # Common template patterns: R26/R27/R28 or R32/R33/R34
+            row_map = {
+                26: t1, 27: bd, 28: t2,
+                32: t1, 33: bd, 34: t2,
+            }
+            
+            for old_r, new_r in row_map.items():
+                if old_r == new_r:
+                    continue
+                # Replace column+old_row references (e.g., H32, K33)
+                for m in re.finditer(r'([A-Z]+)' + str(old_r), v):
+                    col_l = m.group(1)
+                    v = v.replace(col_l + str(old_r), col_l + str(new_r))
+            
+            if v != old:
+                ws.cell(row=t2, column=c).value = v
+                fixed += 1
+        
+        # Fix bad_debt row formulas (if they reference old rows)
+        for c in range(1, min(ws.max_column + 1, 20)):
+            v = ws.cell(row=bd, column=c).value
+            if not v or not isinstance(v, str):
+                continue
+            old = v
+            for old_r, new_r in row_map.items():
+                if old_r == new_r:
+                    continue
+                for m in re.finditer(r'([A-Z]+)' + str(old_r), v):
+                    col_l = m.group(1)
+                    v = v.replace(col_l + str(old_r), col_l + str(new_r))
+            if v != old:
+                ws.cell(row=bd, column=c).value = v
+                fixed += 1
+        
+        if fixed > 0:
+            results[sn] = fixed
+    
+    return results

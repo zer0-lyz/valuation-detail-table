@@ -1,0 +1,243 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created_at": "2026-05-24",
+    "description": "科目数据源Schema——定义每个科目的数据从哪来、怎么去重、怎么校验。脚本加载Schema而非自行推断，消灭数据源混乱。",
+    "principle": "每个科目的primary_source/reconcile_to/dedup_key全部在此定义，fill_sheet()和data_loader.py加载此文件执行，Agent不自行决定数据源。"
+  },
+  "subjects": {
+    "3-1-1现金": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1001",
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1001:closing_balance",
+      "data_template": "counterparty",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "3-1-2银行存款": {
+      "primary_source": "bank_statement_extractions.json",
+      "source_code_prefix": "1002",
+      "secondary_source": "subjects.json",
+      "secondary_filter": "1002",
+      "dedup_key": ["bank_name", "account_no"],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1002:closing_balance",
+      "data_template": "bank_deposit",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "special_rules": [
+        "DT-65: 银行存款关键值校对",
+        "DT-104: 银行存款逐行展开禁止汇总",
+        "DT-135: 结构化数据前置验证"
+      ]
+    },
+    "3-5应收账款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1122",
+      "secondary_source": "auxiliary_balance.json",
+      "secondary_filter": "应收",
+      "dedup_key": ["name", "balance"],
+      "dedup_strategy": "primary_only_if_reconciled",
+      "reconcile_to": "subjects.json:1122:closing_balance",
+      "data_template": "counterparty",
+      "has_bad_debt": true,
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "3-7预付款项": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1123",
+      "secondary_source": "auxiliary_balance.json",
+      "secondary_filter": "预付",
+      "dedup_key": ["name", "balance"],
+      "dedup_strategy": "primary_only_if_reconciled",
+      "reconcile_to": "subjects.json:1123:closing_balance",
+      "data_template": "counterparty",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "3-8-3其他应收款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1221",
+      "secondary_source": "auxiliary_balance.json",
+      "secondary_filter": "其他应收",
+      "dedup_key": ["name", "balance"],
+      "dedup_strategy": "primary_only_if_reconciled",
+      "reconcile_to": "subjects.json:1221:closing_balance",
+      "data_template": "counterparty",
+      "has_bad_debt": true,
+      "idempotent_clear_range": {"start_row": 7, "end_row": "last_data"}
+    },
+    "3-9存货汇总": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": ["1401", "1403", "1405", "1408", "5001", "5002"],
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "bs_balances.json:存货:closing_balance",
+      "data_template": "inventory_summary",
+      "idempotent_clear_range": null,
+      "special_rules": [
+        "DT-145: 行业特殊科目映射(5002开发成本→3-9-6在产品)"
+      ]
+    },
+    "3-9-5产成品": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1405",
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:1405:closing_balance",
+      "data_template": "inventory_detail",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "3-9-6在产品": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": ["5002", "5001"],
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:5002:closing_balance",
+      "data_template": "inventory_detail",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "industry_mapping": "industry_mapping.json:房地产:5002"
+    },
+    "4-8-5运输设备": {
+      "primary_source": "fixed_assets.json",
+      "source_filter": {"category": "运输设备"},
+      "secondary_source": null,
+      "dedup_key": ["asset_name", "original_value"],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:closing_balance",
+      "data_template": "equipment",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "special_rules": [
+        "DT-88: 固定资产PDF卡片台账全量提取",
+        "DT-21: 固定资产明细逐行核对源报表"
+      ]
+    },
+    "4-8-6电子设备": {
+      "primary_source": "fixed_assets.json",
+      "source_filter": {"category": "电子设备"},
+      "secondary_source": null,
+      "dedup_key": ["asset_name", "original_value"],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:1601:closing_balance",
+      "data_template": "equipment",
+      "idempotent_clear_range": {"start_row": 7, "end_row": "last_data"},
+      "special_rules": [
+        "DT-88: 固定资产PDF卡片台账全量提取",
+        "DT-155: 幂等保护(本项目K列3倍数据根因)"
+      ]
+    },
+    "5-5应付账款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2202",
+      "secondary_source": "auxiliary_balance.json",
+      "secondary_filter": "应付账款",
+      "dedup_key": ["name", "balance"],
+      "dedup_strategy": "primary_only_if_reconciled",
+      "reconcile_to": "subjects.json:2202:closing_balance",
+      "data_template": "counterparty",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "special_rules": [
+        "DT-156: 数据源去重(本项目34行重复根因)"
+      ]
+    },
+    "5-8应付职工薪酬": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2211",
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:2211:closing_balance",
+      "data_template": "counterparty",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "5-9应交税费": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2221",
+      "secondary_source": null,
+      "dedup_key": ["code"],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "subjects.json:2221:closing_balance",
+      "data_template": "tax_payable",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "special_rules": [
+        "DT-87: 其他流动资产=应交税费借方余额重分类",
+        "DT-126: 应交税费BS口径拆分",
+        "DT-147: 应交税费逐税种填写+征税机关格式"
+      ]
+    },
+    "5-10-3其他应付款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2241",
+      "secondary_source": "auxiliary_balance.json",
+      "secondary_filter": "其他应付",
+      "dedup_key": ["name", "balance"],
+      "dedup_strategy": "primary_only_if_reconciled",
+      "reconcile_to": "subjects.json:2241:closing_balance",
+      "data_template": "counterparty",
+      "idempotent_clear_range": {"start_row": 7, "end_row": "last_data"}
+    },
+    "5-7短期借款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2201",
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:2201:closing_balance",
+      "data_template": "loan",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"}
+    },
+    "6-1长期借款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2501",
+      "secondary_source": null,
+      "dedup_key": null,
+      "dedup_strategy": null,
+      "reconcile_to": "subjects.json:2501:closing_balance",
+      "data_template": "loan",
+      "idempotent_clear_range": {"start_row": 6, "end_row": "last_data"},
+      "special_rules": [
+        "DT-148: 长期借款必须填写"
+      ]
+    }
+  },
+  "dedup_strategy_definitions": {
+    "keep_first": "按dedup_key去重，保留首次出现的记录",
+    "primary_only_if_reconciled": "如果primary_source数据能勾稽到reconcile_to，仅用primary_source；否则补充secondary_source但需去重",
+    "merge_by_key": "按dedup_key合并同键记录的金额"
+  },
+  "data_template_definitions": {
+    "counterparty": {
+      "description": "往来科目模板：结算对象/业务内容/发生日期/账面价值/评估价值/备注",
+      "required_fields": ["settlement", "business", "date", "book_value", "assessed_value"],
+      "sheet_types": ["3-5", "3-7", "3-8", "5-5", "5-6", "5-10"]
+    },
+    "bank_deposit": {
+      "description": "银行存款模板：户名/币种/汇率/账面价值/评估价值/备注",
+      "required_fields": ["settlement", "currency", "exchange_rate", "book_value", "assessed_value"],
+      "sheet_types": ["3-1-2"]
+    },
+    "equipment": {
+      "description": "设备模板：序号/名称/规格型号/生产厂家/数量/原值/净值/成新率",
+      "required_fields": ["seq", "asset_name", "spec", "manufacturer", "quantity", "original_value", "net_value"],
+      "sheet_types": ["4-8-1", "4-8-5", "4-8-6"]
+    },
+    "inventory_detail": {
+      "description": "存货明细模板：名称/数量/金额",
+      "required_fields": ["name", "quantity", "amount"],
+      "sheet_types": ["3-9-1", "3-9-5", "3-9-6"]
+    },
+    "tax_payable": {
+      "description": "应交税费模板：税种/征税机关/金额",
+      "required_fields": ["tax_type", "authority", "amount"],
+      "sheet_types": ["5-9"]
+    },
+    "loan": {
+      "description": "借款模板：放款银行/利率/金额/到期日",
+      "required_fields": ["lender", "rate", "amount", "maturity"],
+      "sheet_types": ["5-7", "6-1"]
+    }
+  }
+}

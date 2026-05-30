@@ -1,0 +1,252 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "created_at": "2026-05-29",
+    "description": "financial-normalizer 标准化字段 → valuation-detail-table pipeline 字段的映射规则。修复映射只需改此文件。"
+  },
+  "trial_balance": {
+    "_desc": "科目余额表字段映射",
+    "field_map": {
+      "account_code": "code",
+      "account_name": "name",
+      "currency": "currency",
+      "level1_name": null,
+      "level2_name": null,
+      "level3_name": null,
+      "opening_debit": "beginning_debit",
+      "opening_credit": "beginning_credit",
+      "opening_balance": null,
+      "current_debit": "current_debit",
+      "current_credit": "current_credit",
+      "closing_debit": "ending_debit",
+      "closing_credit": "ending_credit",
+      "closing_balance": null
+    },
+    "compute_fields": {
+      "balance": {
+        "_desc": "期末余额：优先 clsing_debit/closing_credit 分列值，其次 closing_balance",
+        "formula": "ed if ed and not ec else (ec if ec and not ed else (ed - ec if ed and ec else cb))",
+        "variables": {
+          "ed": "ending_debit",
+          "ec": "ending_credit",
+          "cb": null
+        }
+      },
+      "direction": {
+        "_desc": "余额方向：根据 ending_debit/ending_credit 判定",
+        "formula": "借 if ending_debit >= ending_credit else 贷"
+      },
+      "level": {
+        "_desc": "科目级次：按编码长度估算",
+        "formula": "max(len(code) // 2, 1)"
+      }
+    }
+  },
+  "balance_sheet": {
+    "_desc": "资产负债表字段映射",
+    "field_map": {
+      "item_name": "label",
+      "currency": null,
+      "item_category": null,
+      "item_direction": null,
+      "closing_balance": "ending_balance",
+      "opening_balance": "beginning_balance"
+    },
+    "compute_fields": {
+      "side": {
+        "_desc": "资产侧还是负债及权益侧",
+        "formula": "负债及权益 if '负债' in item_category or '所有者权益' in item_category else (资产 if '资产' in item_category else '')"
+      }
+    }
+  },
+  "code_to_sheet": {
+    "_desc": "科目编码→明细表Sheet映射（唯一数据源，sheet_filler 从此加载）",
+    "_merged_from": "sheet_filler.py:STANDARD_MAP + subject_schema.json:source_code_prefix",
+    "mappings": {
+      "1001": "3-1-1",
+      "1002": "3-1-2",
+      "1012": "3-1-3",
+      "1101": "3-2-3",
+      "1121": "3-4",
+      "1122": "3-5",
+      "1123": "3-7",
+      "1131": "3-8-2",
+      "1132": "3-8-1",
+      "1221": "3-8-3",
+      "1231": "3-8-3",
+      "1241": "3-8-3",
+      "1401": "3-9",
+      "1402": "3-9-1",
+      "1403": "3-9-2",
+      "1405": "3-9-5",
+      "1406": "3-9-7",
+      "1408": "3-9-4",
+      "1411": "3-9-8",
+      "1481": "3-11",
+      "1501": "4-1",
+      "1503": "4-2",
+      "1511": "4-4",
+      "1531": "4-3",
+      "1601": "4-8-4",
+      "1602": "4-8-4",
+      "1603": "4-8-4",
+      "1604": "4-9-2",
+      "1605": "4-9-3",
+      "1606": "4-8-7",
+      "1621": "4-10",
+      "1631": "4-11",
+      "1700": "4-12",
+      "1701": "4-13-3",
+      "1702": "4-13-3",
+      "1703": "4-13-3",
+      "1704": "4-14",
+      "1711": "4-15",
+      "1801": "4-16",
+      "1811": "4-17",
+      "1821": "3-13",
+      "1901": "4-18",
+      "2001": "5-1",
+      "2002": "5-1",
+      "2101": "5-3",
+      "2102": "5-10-3",
+      "2201": "5-1",
+      "2202": "5-5",
+      "2203": "5-6",
+      "2211": "5-8",
+      "2221": "5-9",
+      "2231": "5-10-1",
+      "2232": "5-10-2",
+      "2241": "5-10-3",
+      "2245": "5-11",
+      "2401": "6-7",
+      "2501": "6-1",
+      "2502": "6-1",
+      "2600": "6-3",
+      "260001": "6-3",
+      "2701": "6-4",
+      "2801": "6-6",
+      "2802": "6-3",
+      "2901": "6-8",
+      "4001": "净资产汇总",
+      "4002": "净资产汇总",
+      "4101": "净资产汇总",
+      "4103": "净资产汇总",
+      "4104": "净资产汇总",
+      "5001": "3-9-6",
+      "5002": "3-9-6",
+      "5201": "3-9-6",
+      "1483": "3-13"
+    }
+  },
+  "fixed_asset": {
+    "_desc": "固定资产台账字段映射",
+    "field_map": {
+      "固定资产编号": "asset_code",
+      "卡片编号": "asset_code",
+      "资产编码": "asset_code",
+      "固定资产名称": "asset_name",
+      "资产名称": "asset_name",
+      "类别名称": "asset_category",
+      "资产类别": "asset_category",
+      "规格型号": "specification",
+      "规格": "specification",
+      "型号": "specification",
+      "数量": "quantity",
+      "单位": "unit",
+      "计量单位": "unit",
+      "开始使用日期": "start_date",
+      "启用日期": "start_date",
+      "录入日期": "acquisition_date",
+      "采购日期": "acquisition_date",
+      "入账日期": "acquisition_date",
+      "原值": "original_value",
+      "年初原值": "original_value",
+      "账面原值": "original_value",
+      "累计折旧": "accumulated_depreciation",
+      "年初累计折旧": "accumulated_depreciation",
+      "本月计提折旧额": "accumulated_depreciation",
+      "本年计提折旧": "accumulated_depreciation",
+      "减值准备": "impairment_amount",
+      "累计减值准备金额": "impairment_amount",
+      "净值": "net_value",
+      "账面净值": "net_value",
+      "使用部门": "department",
+      "管理部门": "department",
+      "存放地点": "location",
+      "使用地点": "location",
+      "供应商": "supplier",
+      "生产厂家": "supplier",
+      "制造厂商": "supplier",
+      "折旧方法": "depreciation_method",
+      "使用年限(月)": "depreciation_life",
+      "折旧年限": "depreciation_life",
+      "净残值率": "residual_rate",
+      "残值率": "residual_rate",
+      "月折旧率": "monthly_depreciation",
+      "月折旧额": "monthly_depreciation",
+      "使用状况": "status",
+      "资产状态": "status",
+      "币种": "currency",
+      "货币": "currency"
+    },
+    "compute_fields": {
+      "net_value": {
+        "_desc": "净值：优先取净值列，否则 原值 - 累计折旧",
+        "formula": "net_value if net_value else (original_value - accumulated_depreciation)",
+        "variables": {
+          "net_value": "net_value",
+          "original_value": "original_value",
+          "accumulated_depreciation": "accumulated_depreciation"
+        }
+      }
+    },
+    "column_priority": {
+      "_desc": "当多个列映射到同一标准字段时的优先级（越靠前越优先）",
+      "asset_code": [
+        "固定资产编号",
+        "资产编码",
+        "卡片编号"
+      ],
+      "asset_name": [
+        "固定资产名称",
+        "资产名称"
+      ],
+      "original_value": [
+        "原值",
+        "账面原值",
+        "年初原值"
+      ],
+      "accumulated_depreciation": [
+        "累计折旧",
+        "本年计提折旧",
+        "年初累计折旧"
+      ],
+      "net_value": [
+        "净值",
+        "账面净值"
+      ],
+      "acquisition_date": [
+        "采购日期",
+        "录入日期",
+        "入账日期"
+      ],
+      "start_date": [
+        "开始使用日期",
+        "启用日期"
+      ],
+      "specification": [
+        "规格型号",
+        "规格",
+        "型号"
+      ],
+      "department": [
+        "使用部门",
+        "管理部门"
+      ],
+      "location": [
+        "存放地点",
+        "使用地点"
+      ]
+    }
+  }
+}

@@ -1,0 +1,644 @@
+#!/usr/bin/env python3
+"""
+hide_empty_sheets.py — 评估明细表空白Sheet自动隐藏工具
+
+功能：按DT-20/DT-23/DT-110规则，自动扫描评估明细表中的空白Sheet和辅助表并隐藏。
+
+判定标准（DT-20精确化）：
+  空白Sheet = A列"合计1"所在行的账面价值列AND评估价值列均为0或blank
+
+辅助表（DT-23，始终隐藏）：
+  设置、0-其他方法结论、设定信息
+
+辅汇总表（DT-61，始终隐藏）：
+  3-辅-流动资产汇总、3-9-辅-存货汇总、8-减值准备汇总表、9-非财务信息汇总表
+
+用法：
+  python hide_empty_sheets.py <xlsx_path> [--dry-run] [--output-report <path>]
+
+参数：
+  xlsx_path       评估明细表文件路径
+  --dry-run       仅扫描不修改，输出隐藏清单预览
+  --output-report 隐藏清单输出路径（默认stdout）
+
+退出码：
+  0 = 成功（或dry-run完成）
+  1 = 错误
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+try:
+    import openpyxl
+except ImportError:
+    print("ERROR: openpyxl未安装，请运行: pip install openpyxl")
+    sys.exit(1)
+
+
+# ===== sheet_col_map.json加载（DT-212：双行表头列位修正） =====
+
+def _find_sheet_col_map_path() -> "Path | None":
+    """查找sheet_col_map.json预生成映射文件路径"""
+    _SKILLS_ROOT = Path.home() / '.workbuddy' / 'skills'
+    _SCRIPTS_DIR = Path(__file__).resolve().parent
+    candidates = [
+        _SKILLS_ROOT / 'valuation-detail-table' / 'assets' / 'sheet_col_map.json',
+        _SCRIPTS_DIR.parent / 'assets' / 'sheet_col_map.json',
+        _SCRIPTS_DIR / 'sheet_col_map.json',
+        _SCRIPTS_DIR / 'assets' / 'sheet_col_map.json',
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+_COL_MAP_CACHE = None
+
+
+def _load_sheet_col_map() -> dict:
+    """加载sheet_col_map.json，返回 {sheet_name: col_map_dict}"""
+    global _COL_MAP_CACHE
+    if _COL_MAP_CACHE is not None:
+        return _COL_MAP_CACHE
+
+    map_path = _find_sheet_col_map_path()
+    if map_path is None:
+        _COL_MAP_CACHE = {}
+        return _COL_MAP_CACHE
+
+    try:
+        with open(map_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        _COL_MAP_CACHE = {}
+        for sn, info in data.get('sheets', {}).items():
+            _COL_MAP_CACHE[sn] = info.get('col_map', {})
+        return _COL_MAP_CACHE
+    except Exception:
+        _COL_MAP_CACHE = {}
+        return _COL_MAP_CACHE
+
+
+def _get_col_map_for_sheet(sheet_name: str) -> dict:
+    """获取指定Sheet的列映射（book_value/assessed_value列号）"""
+    all_maps = _load_sheet_col_map()
+    if sheet_name in all_maps:
+        return all_maps[sheet_name]
+    # 模糊匹配
+    import re
+    clean_name = re.sub(r'[（(].+?[）)]', '', sheet_name).strip()
+    for cached_name, cmap in all_maps.items():
+        cached_clean = re.sub(r'[（(].+?[）)]', '', cached_name).strip()
+        if clean_name == cached_clean:
+            return cmap
+    return {}
+
+
+# ===== 常量定义（v2.0 改进版）=====
+
+# DT-23: 始终隐藏的辅助表
+ALWAYS_HIDDEN = {
+    "设置", "设定信息", "0-其他方法结论", "00000000",
+    "公式数据表", "目录", "0-报告用表",
+    "3-辅-流动资产汇总", "3-9-辅-存货汇总",
+    "8-减值准备汇总表", "9-非财务信息汇总表",
+    "净资产汇总", "_BS对照",
+}
+
+# 始终可见的顶层汇总表
+ALWAYS_VISIBLE = {"1-汇总表", "2-分类汇总"}
+
+# 汇总表→子表依赖映射（用于依赖传播）
+# 如果任意子表有数据，父汇总表也保持可见
+SUMMARY_CHILDREN = {
+    "3-流动资产汇总": ["3-1货币资金汇总表", "3-2交易性金融资产汇总",
+                      "3-4应收票据", "3-5应收账款", "3-6应收款项融资",
+                      "3-7预付款项", "3-8其他应收款汇总",
+                      "3-9存货汇总", "3-10合同资产", "3-11持有待售资产",
+                      "3-12一年到期非流动资产", "3-13其他流动资产"],
+    "3-1货币资金汇总表": ["3-1-1现金", "3-1-2银行存款", "3-1-3其他货币资金"],
+    "3-2交易性金融资产汇总": ["3-2-1-股票", "3-2-2-债券", "3-2-3-基金"],
+    "3-8其他应收款汇总": ["3-8-1应收利息", "3-8-2应收股利", "3-8-3其他应收款"],
+    "3-9存货汇总": ["3-9-2原材料", "3-9-5产成品（库存商品）",
+                    "3-9-6在产品（自制半成品）"],
+    "4-非流动资产汇总": ["4-1债权投资", "4-8固定资产汇总",
+                        "4-9在建工程汇总", "4-13无形资产汇总",
+                        "4-16长期待摊费用", "4-17递延所得税资产"],
+    "4-8固定资产汇总": ["4-8-1房屋建筑物", "4-8-2构筑物", "4-8-3管道沟槽",
+                        "4-8-4机器设备", "4-8-5车辆", "4-8-6电子设备",
+                        "4-8-7固定资产清理"],
+    "4-9在建工程汇总": ["4-9-1在建（土建）", "4-9-2在建（设备）",
+                        "4-9-3在建工程（工程物资）"],
+    "4-13无形资产汇总": ["4-13-1无形-土地", "4-13-2无形-矿业权",
+                         "4-13-3无形-其他"],
+    "5-流动负债汇总": ["5-1短期借款", "5-5应付账款", "5-6预收款项",
+                      "5-7合同负债", "5-8应付职工薪酬", "5-9应交税费",
+                      "5-10其他应付款汇总表"],
+    "5-10其他应付款汇总表": ["5-10-1应付利息", "5-10-2应付股利（利润）",
+                             "5-10-3其他应付款"],
+    "6-非流动负债汇总": ["6-1长期借款", "6-3租赁负债", "6-4长期应付款",
+                        "6-5长期应付职工薪酬", "6-6预计负债",
+                        "6-7递延收益", "6-8递延所得税负债"],
+}
+
+
+def is_detail_sheet(name: str) -> bool:
+    """判断Sheet是否为明细表（3-X-Y/4-X-Y/5-X-Y/6-X-Y格式），参与空白判定"""
+    import re
+    return bool(re.match(r'^[3-6]-\d', name))
+
+
+def is_structure_sheet(name: str) -> bool:
+    """判断Sheet是否为结构/汇总表，不参与空白判定"""
+    # 精确名称匹配
+    if name in SKIP_EXACT_NAMES:
+        return True
+    # 前缀匹配
+    for prefix in SKIP_PREFIXES:
+        if name.startswith(prefix):
+            return True
+    return False
+
+
+def find_heji1_row(ws) -> "int | None":
+    """定位A列='合计1'的行号（DT-116新模板标记体系）"""
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
+        for cell in row:
+            v = str(cell.value).strip() if cell.value else ""
+            if v == "合计1":
+                return cell.row
+    return None
+
+
+def find_header_row(ws) -> "int | None":
+    """定位表头行（A列标记为检索表头/检索表头1/检索表头2的行）"""
+    for row in ws.iter_rows(min_row=1, max_row=10, min_col=1, max_col=1):
+        for cell in row:
+            v = str(cell.value).strip() if cell.value else ""
+            if v in ("检索表头", "检索表头1", "检索表头2"):
+                return cell.row
+    return None
+
+
+def find_value_columns(ws, header_row: int) -> tuple["int | None", "int | None"]:
+    """在表头行定位'账面价值'和'评估价值'列号
+
+    支持模糊匹配：'账面价值（摊余价值）'→匹配账面价值，'评 估 价 值'→匹配评估价值
+    """
+    book_col = None
+    eval_col = None
+
+    for cell in ws[header_row]:
+        v = str(cell.value).strip() if cell.value else ""
+        # 账面价值：包含"账面价值"即可（兼容"账面价值（摊余价值）"等变体）
+        if "账面价值" in v.replace(" ", ""):
+            book_col = cell.column
+        # 评估价值：包含"评估价值"即可（兼容带空格的变体）
+        elif "评估价值" in v.replace(" ", ""):
+            eval_col = cell.column
+
+    return book_col, eval_col
+
+
+def is_empty_value(val) -> bool:
+    """判断单元格值是否为'空'（0或None或blank）"""
+    if val is None:
+        return True
+    if isinstance(val, (int, float)):
+        return val == 0
+    if isinstance(val, str):
+        stripped = val.strip()
+        if stripped == "":
+            return True
+        # 公式字符串不在此判定，由 resolve_formula_value 处理
+        return False
+    return False
+
+
+def is_formula(val) -> bool:
+    """判断单元格值是否为公式"""
+    return isinstance(val, str) and val.strip().startswith("=")
+
+
+def resolve_formula_value(ws, val, row: int, col: int, xlsx_path: str = None) -> tuple:
+    """
+    解析合计1行单元格的公式值，返回 (resolved_value, resolution_method)
+
+    三级解析策略：
+    1. data_only缓存值（Excel已计算过）
+    2. 手动解析SUM公式范围并求和
+    3. 回退：扫描公式引用范围内是否有实际填入值
+
+    返回:
+        (resolved_value: float|None, method: str)
+        resolved_value: None = 无法解析
+        method: "cached" | "manual_sum" | "has_filled_data" | "formula_parse_failed"
+    """
+    if not is_formula(val):
+        # 非公式值，直接返回
+        if isinstance(val, (int, float)):
+            return (val, "direct_numeric")
+        return (None, "non_formula_non_numeric")
+
+    # ---- 策略1: data_only缓存值 ----
+    if xlsx_path:
+        try:
+            wb_data = openpyxl.load_workbook(xlsx_path, data_only=True)
+            sheet_name = ws.title
+            if sheet_name in wb_data.sheetnames:
+                ws_data = wb_data[sheet_name]
+                cached = ws_data.cell(row=row, column=col).value
+                wb_data.close()
+                if cached is not None and isinstance(cached, (int, float)):
+                    return (cached, "cached")
+            else:
+                wb_data.close()
+        except Exception:
+            pass
+
+    # ---- 策略2: 手动解析SUM公式并求和 ----
+    import re as _re
+    formula = val.strip()
+
+    # 解析 =ROUND(SUM(H6:H28),2) 或 =SUM(H6:H28) 或 =SUM(H6:H28, H30:H35)
+    sum_pattern = r'SUM\(([^)]+)\)'
+    sum_match = _re.search(sum_pattern, formula, _re.IGNORECASE)
+
+    if sum_match:
+        range_str = sum_match.group(1)
+        total = 0.0
+        has_any_value = False
+        range_parsed = True
+
+        # 拆分多个范围: "H6:H28, H30:H35"
+        for part in range_str.split(","):
+            part = part.strip()
+            # 解析 "H6:H28" 格式
+            range_match = _re.match(r'([A-Z]+)(\d+):([A-Z]+)(\d+)', part)
+            if range_match:
+                start_col_letter = range_match.group(1)
+                start_row_num = int(range_match.group(2))
+                end_col_letter = range_match.group(3)
+                end_row_num = int(range_match.group(4))
+
+                # 列字母转列号
+                start_col_num = _col_letter_to_num(start_col_letter)
+                end_col_num = _col_letter_to_num(end_col_letter)
+
+                if start_col_num != end_col_num:
+                    # 跨列SUM，无法简单手动求和
+                    range_parsed = False
+                    break
+
+                # 遍历行，求和
+                for r in range(start_row_num, end_row_num + 1):
+                    cell_val = ws.cell(row=r, column=start_col_num).value
+                    if cell_val is not None:
+                        if isinstance(cell_val, (int, float)):
+                            total += cell_val
+                            has_any_value = True
+                        elif is_formula(cell_val):
+                            # 子行也是公式，无法递归解析，标记有内容但值不确定
+                            has_any_value = True
+                            # 尝试读取缓存值
+                            if xlsx_path:
+                                try:
+                                    wb_d2 = openpyxl.load_workbook(xlsx_path, data_only=True)
+                                    ws_d2 = wb_d2[sheet_name] if sheet_name in wb_d2.sheetnames else None
+                                    if ws_d2:
+                                        sub_cached = ws_d2.cell(row=r, column=start_col_num).value
+                                        if sub_cached is not None and isinstance(sub_cached, (int, float)):
+                                            total += sub_cached
+                                    wb_d2.close()
+                                except Exception:
+                                    pass
+            else:
+                range_parsed = False
+                break
+
+        if range_parsed:
+            return (total, "manual_sum")
+
+    # ---- 策略3: 无法解析公式时，扫描公式引用范围是否有实际填入值 ----
+    # 如果公式引用范围内的数据行B/C列有文本数据，说明有人填写过
+    # 此策略在 check_sheet_empty 中由 has_data_rows 兜底
+    return (None, "formula_parse_failed")
+
+
+def _col_letter_to_num(letter: str) -> int:
+    """Excel列字母转列号: A=1, B=2, ..., Z=26, AA=27"""
+    result = 0
+    for ch in letter.upper():
+        result = result * 26 + (ord(ch) - ord('A') + 1)
+    return result
+
+
+def has_data_rows(ws, header_row: int) -> bool:
+    """
+    兜底判定：表头行之后是否有真实数据行
+
+    判定逻辑（双重检查）：
+    1. B列（序号）或C列（名称/结算对象）是否有非空文本数据 → 有人填写过
+    2. 账面价值列（通过表头定位）是否有非公式数值 → 有人填写过
+
+    空白Sheet的特征：表头行之后只有模板预留的公式行（如=J6-H6），
+    但B/C列空白、账面价值/评估价值列也为空白或仅有公式。
+    """
+    import re
+
+    # 定位数据起始行
+    # 单行表头: 检索表头 → 下一行
+    # 双行表头: 检索表头2 → 下一行
+    a_col_row5 = ws.cell(row=5, column=1).value
+    if a_col_row5 and str(a_col_row5).strip() == "检索表头2":
+        # 可能Row5=检索表头1, Row6=检索表头2
+        data_start = 7
+    elif a_col_row5 and str(a_col_row5).strip() == "检索表头":
+        data_start = 6
+    elif a_col_row5 and str(a_col_row5).strip() == "检索表头1":
+        a_col_row6 = ws.cell(row=6, column=1).value
+        if a_col_row6 and str(a_col_row6).strip() == "检索表头2":
+            data_start = 7
+        else:
+            data_start = 6
+    else:
+        data_start = header_row + 1
+
+    # 检查B列和C列是否有文本数据
+    for row in ws.iter_rows(min_row=data_start, max_row=min(data_start + 50, ws.max_row),
+                            min_col=2, max_col=3):
+        for cell in row:
+            v = cell.value
+            if v is not None and isinstance(v, str):
+                # 去除所有空格后比较（模板中"合          计"等含空格的标签）
+                normalized = v.replace(" ", "").strip()
+                if normalized and normalized not in ("合计", "合计1", "合计2", "坏账准备", "预计风险", "减：", "小计"):
+                    return True
+            if v is not None and isinstance(v, (int, float)) and v != 0:
+                return True
+
+    # 检查账面价值列是否有数值（非公式）
+    # DT-212: 优先从sheet_col_map.json获取精确列位
+    col_map = _get_col_map_for_sheet(ws.title)
+    if col_map and 'book_value' in col_map:
+        book_col = col_map['book_value']
+    else:
+        book_col, _ = find_value_columns(ws, header_row)
+    if book_col:
+        for row in ws.iter_rows(min_row=data_start, max_row=min(data_start + 50, ws.max_row),
+                                min_col=book_col, max_col=book_col):
+            for cell in row:
+                v = cell.value
+                # 数值型 = 真实数据
+                if v is not None and isinstance(v, (int, float)) and v != 0:
+                    return True
+                # 公式型（如=SUM(...)）不算有数据，但直接数值（如12345.67）算
+
+    return False
+
+
+def check_sheet_empty(ws, sheet_name, xlsx_path=None):
+    """严格检测Sheet是否有真实数据（v2.0）。
+
+    判定标准：
+      1. 必须存在数据行，且结算对象列有非空文本
+      2. 对应账面价值列为非零数值（非公式）
+      3. 汇总表不参与检测（由依赖传播决定）
+
+    Returns:
+        dict: {sheet_name, is_detail, heji1_row, book_value, eval_value, is_empty, reason}
+    """
+    result = {
+        "sheet_name": sheet_name,
+        "is_detail": is_detail_sheet(sheet_name),
+        "heji1_row": None,
+        "book_value": None,
+        "eval_value": None,
+        "is_empty": True,
+        "reason": ""
+    }
+
+    # 系统表跳过
+    if sheet_name in ALWAYS_HIDDEN:
+        result["reason"] = "始终隐藏"
+        return result
+    if sheet_name in ALWAYS_VISIBLE:
+        result["is_empty"] = False
+        result["reason"] = "始终可见"
+        return result
+
+    try:
+        has_data = _has_real_data_rows(ws, sheet_name)
+        result["is_empty"] = not has_data
+        result["reason"] = "有数据" if has_data else "无数据行"
+    except Exception as e:
+        result["reason"] = f"检测异常: {e}"
+
+    return result
+
+
+def _has_real_data_rows(ws, sheet_name):
+    """严格检测Sheet是否有真实数据行。
+
+    条件：存在一条数据行，同时满足：
+      1. 结算对象/名称列（C列）有非空文本
+      2. 账面价值列为非零数值（非公式）
+    """
+    import openpyxl
+    from pathlib import Path
+
+    # 定位数据起始行和合计行
+    data_start = None
+    total_row = None
+    for r in range(1, min(ws.max_row + 1, 80)):
+        a_val = str(ws.cell(row=r, column=1).value or "").strip()
+        if a_val in ("检索表头", "检索表头1"):
+            if data_start is None:
+                data_start = r + 1
+        if a_val == "检索表头2":
+            data_start = r + 1
+        if a_val == "合计1":
+            total_row = r
+
+    if data_start is None:
+        return False
+
+    data_end = total_row if total_row else ws.max_row
+
+    # 获取账面价值列号
+    col_map = _get_col_map_for_sheet(sheet_name)
+    bv_col = col_map.get("book_value") if col_map else None
+    if bv_col is None:
+        if sheet_name.startswith(("5-", "6-")):
+            bv_col = 9
+        elif sheet_name.startswith("3-"):
+            bv_col = 10
+        elif sheet_name.startswith("4-"):
+            bv_col = 7
+        else:
+            bv_col = 5
+
+    for r in range(data_start, data_end):
+        # 检查C列（结算对象/名称）是否有非空文本
+        c_val = ws.cell(row=r, column=3).value
+        if c_val is None:
+            c_val = ws.cell(row=r, column=2).value  # 有些表在B列
+        if c_val is None:
+            continue
+        
+        name = str(c_val).strip()
+        if not name or name in ("None", "0", "0.00", ""):
+            continue
+
+        # 检查账面价值列是否有非零数值
+        if bv_col and bv_col <= ws.max_column:
+            bv = ws.cell(row=r, column=bv_col).value
+            if bv is not None and bv != 0:
+                bv_str = str(bv).strip()
+                if not bv_str.startswith("="):
+                    return True
+
+    return False
+def hide_empty_sheets(xlsx_path, dry_run=False):
+    """扫描评估明细表，隐藏空白Sheet（v2.0 含依赖传播）。
+
+    Args:
+        xlsx_path: 评估明细表文件路径
+        dry_run: 若为True，仅预览不修改
+
+    Returns:
+        dict: {report, dry_run, hidden_count, shown_count}
+    """
+    import openpyxl
+    from pathlib import Path
+
+    filepath = Path(xlsx_path)
+    if not filepath.exists():
+        return {"error": f"文件不存在: {xlsx_path}", "dry_run": dry_run}
+
+    wb = openpyxl.load_workbook(str(filepath), data_only=True)
+
+    # Phase 1: 检测每个Sheet是否有数据
+    sheet_has_data = {}
+    for sname in wb.sheetnames:
+        ws = wb[sname]
+        if sname in ALWAYS_HIDDEN:
+            sheet_has_data[sname] = False
+        elif sname in ALWAYS_VISIBLE:
+            sheet_has_data[sname] = True
+        else:
+            sheet_has_data[sname] = _has_real_data_rows(ws, sname)
+
+    wb.close()
+
+    # Phase 2: 依赖传播——子表有数据的，父汇总表也可见
+    for _ in range(10):  # 多轮传播（支持嵌套汇总链）
+        changed = False
+        for parent, children in SUMMARY_CHILDREN.items():
+            if any(sheet_has_data.get(c, False) for c in children):
+                if not sheet_has_data.get(parent, False):
+                    sheet_has_data[parent] = True
+                    changed = True
+        if not changed:
+            break
+
+    # Phase 3: 应用隐藏/显示
+    wb = openpyxl.load_workbook(str(filepath))
+    report = {
+        "file": str(filepath),
+        "dry_run": dry_run,
+        "total": len(wb.sheetnames),
+        "hidden": 0,
+        "shown": 0,
+        "details": [],
+    }
+
+    for sname in wb.sheetnames:
+        ws = wb[sname]
+        should_be_visible = sheet_has_data.get(sname, False)
+        current_state = ws.sheet_state
+        target_state = "visible" if should_be_visible else "hidden"
+
+        if current_state != target_state:
+            if not dry_run:
+                ws.sheet_state = target_state
+            action = "隐藏" if target_state == "hidden" else "显示"
+            report["details"].append({
+                "sheet": sname,
+                "action": action,
+                "from": current_state,
+                "to": target_state,
+            })
+            if target_state == "hidden":
+                report["hidden"] += 1
+            else:
+                report["shown"] += 1
+
+    if not dry_run:
+        wb.save(str(filepath))
+    wb.close()
+
+    return report
+def format_report(report: dict) -> str:
+    """将报告格式化为可读文本"""
+    lines = []
+    lines.append("=" * 60)
+    lines.append("Sheet隐藏操作清单（DT-110/DT-20/DT-23/DT-61 v2.0）")
+    lines.append("=" * 60)
+    if report["dry_run"]:
+        lines.append("⚠️ DRY-RUN模式 — 仅扫描，未修改文件")
+    lines.append(f"文件: {report['file']}")
+    lines.append(f"总Sheet数: {report['total']}")
+    lines.append("")
+
+    # 操作明细
+    if report["details"]:
+        lines.append("隐藏/显示操作:")
+        for item in report["details"]:
+            lines.append(f"  {'🔒' if item['action'] == '隐藏' else '🔓'} {item['sheet']} ({item['from']}→{item['to']})")
+        lines.append("")
+
+    # 汇总状态
+    hidden_details = [d for d in report["details"] if d["action"] == "隐藏"]
+    shown_details = [d for d in report["details"] if d["action"] == "显示"]
+    lines.append("-" * 40)
+    lines.append(f"本次隐藏: {len(hidden_details)}个")
+    lines.append(f"本次显示: {len(shown_details)}个")
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="评估明细表空白Sheet自动隐藏工具")
+    parser.add_argument("xlsx_path", help="评估明细表文件路径")
+    parser.add_argument("--dry-run", action="store_true", help="仅扫描不修改")
+    parser.add_argument("--output-report", help="隐藏清单输出路径（JSON格式）")
+    args = parser.parse_args()
+
+    try:
+        report = hide_empty_sheets(args.xlsx_path, dry_run=args.dry_run)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: 执行失败 - {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    # 输出可读报告
+    print(format_report(report))
+
+    # 输出JSON报告（如指定）
+    if args.output_report:
+        with open(args.output_report, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"\nJSON报告已保存: {args.output_report}")
+
+
+if __name__ == "__main__":
+    main()
