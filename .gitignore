@@ -2,8 +2,11 @@ __pycache__/
 *.pyc
 .DS_Store
 ._*
-financial-normalizer/output/
+.idea/
+.vscode/
 *.egg-info/
 dist/
 build/
 .env
+financial-normalizer/output/
+valuation-detail-table/scripts/poppler-*/
