@@ -161,7 +161,7 @@
 - [ ] **[DT-93] 预收/合同负债按科目余额表(2203/2210)分类正确**
 - [ ] **[DT-94] 固定资产无子科目拆分时已按PDF卡片台账分类**
 - [ ] **[DT-100] G2-6 BS重分类自动检测——BS某科目=0但科目余额表有值的科目已查找重分类去向并标注**
-- **验证方法**: `python scripts/gate_validator.py <path> --gate G2 --bs-path <bs> --sb-path <sb>`
+- **验证方法**: `python3 valuation-detail-table/scripts/gate_validator.py <path> --gate G2 --bs-path <bs> --sb-path <sb>`
 - **异常**: CRITICAL>0 → 必须修复后再验证
 - **联动**: C3依赖C2.5验证通过
 
@@ -220,7 +220,7 @@
 - [ ] **[DT-82] G1F-4 空白数据行边框完整性**
 - [ ] **[DT-83] G1F-5 多行表头合并单元格与模板一致**
 - [ ] **[DT-67] G1F-6 公式列（J/K）未被数值覆写**
-- **验证方法**: `python scripts/gate_validator.py <path> --gate G1-Format`
+- **验证方法**: `python3 valuation-detail-table/scripts/gate_validator.py <path> --gate G1-Format`
 - **异常**: CRITICAL>0 → 必须修复后再验证（回退Phase 3）
 - **联动**: C4.5依赖C3.5验证通过
 

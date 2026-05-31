@@ -102,7 +102,7 @@ else:
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.join(os.path.expanduser('~'), '.workbuddy', 'skills', 'valuation-detail-table', 'scripts'))
+sys.path.insert(0, os.path.join(os.path.expanduser('~'), '.codex', 'skills', 'valuation-detail-table', 'valuation-detail-table', 'scripts'))
 
 from journal_extractor import JournalExtractor
 

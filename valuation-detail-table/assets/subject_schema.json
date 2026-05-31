@@ -149,7 +149,7 @@
     },
     "3-2-2-债券": {
       "primary_source": "subjects.json",
-      "source_code_prefix": "1101",
+      "source_code_prefix": "110102",
       "dedup_key": null,
       "dedup_strategy": null,
       "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
@@ -163,7 +163,7 @@
     },
     "3-2-3-基金": {
       "primary_source": "subjects.json",
-      "source_code_prefix": "1101",
+      "source_code_prefix": "110103",
       "dedup_key": null,
       "dedup_strategy": null,
       "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
@@ -188,7 +188,6 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": "1101",
       "reconcile_to": "subjects.json:1101:balance"
     },
     "3-4应收票据": {
@@ -530,7 +529,7 @@
       ],
       "dedup_strategy": "keep_first",
       "reconcile_to": "subjects.json:1701:balance",
-      "data_template": "equipment",
+      "data_template": "counterparty",
       "contra_account": {
         "depreciation": "1702",
         "impairment": "1703"
@@ -634,7 +633,7 @@
     },
     "4-16长期待摊费用": {
       "primary_source": "subjects.json",
-      "source_code_prefix": null,
+      "source_code_prefix": "1801",
       "dedup_key": [
         "code"
       ],
@@ -769,7 +768,6 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": "1101",
       "reconcile_to": "subjects.json:1101:balance"
     },
     "4-6-2-债券": {
@@ -785,7 +783,6 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": "1501",
       "reconcile_to": "subjects.json:1501:balance"
     },
     "4-6-3-基金": {
@@ -801,7 +798,6 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": "1101",
       "reconcile_to": "subjects.json:1101:balance"
     },
     "4-8-1房屋建筑物": {
@@ -1250,6 +1246,8 @@
     "5-9应交税费": {
       "primary_source": "subjects.json",
       "source_code_prefix": "2221",
+      "filter_rule": "名称含'应交税费'",
+      "skip_sub_accounts": true,
       "dedup_key": [
         "code"
       ],

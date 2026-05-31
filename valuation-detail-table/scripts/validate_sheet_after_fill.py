@@ -25,7 +25,7 @@ from openpyxl.utils import get_column_letter
 from datetime import datetime
 
 # 从valuation-common导入共享工具函数
-sys.path.insert(0, os.path.expanduser('~/.workbuddy/skills/valuation-common/scripts'))
+sys.path.insert(0, os.path.expanduser('~/.codex/skills/valuation-detail-table/valuation-common/scripts'))
 from shared_utils import get_sheet_prefix
 from sheet_col_finder import find_header_cols, get_formula_cols, get_amount_cols
 

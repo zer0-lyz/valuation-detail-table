@@ -27,8 +27,10 @@ import os
 import sys
 import glob
 import re
+import hashlib
 import traceback
 from datetime import datetime
+from release_status import build_release_status, ensure_formula_cache_status
 
 # 路径配置
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -152,6 +154,242 @@ def _load_cache(cache_dir, filename):
     return None
 
 
+def _sha256_file(path):
+    """计算文件sha256。"""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _build_project_state(project_dir, status, cache_dir=None, pending_count=0):
+    """构建并持久化统一项目状态文件。"""
+    if cache_dir is None:
+        cache_dir = _cache_path(project_dir)
+
+    source_fingerprints = {}
+    for pat in ('*.xlsx', '*.xls', '*.pdf'):
+        for p in glob.glob(os.path.join(project_dir, pat)):
+            if not os.path.isfile(p):
+                continue
+            try:
+                st = os.stat(p)
+                source_fingerprints[os.path.basename(p)] = {
+                    'mtime': st.st_mtime,
+                    'sha256': _sha256_file(p),
+                }
+            except OSError:
+                continue
+
+    state = {
+        'schema_version': '4.0',
+        'status': status,
+        'project_id': os.path.basename(os.path.abspath(project_dir)),
+        'updated_at': datetime.now().isoformat(),
+        'source_fingerprints': source_fingerprints,
+        'pending_count': pending_count,
+        'artifacts': {
+            'cache_dir': cache_dir,
+            'pending_confirmations': os.path.join(cache_dir, 'pending_confirmations.json'),
+            'gate_results': os.path.join(cache_dir, 'gate_results.json'),
+            'qa_report': os.path.join(cache_dir, 'qa_report.json'),
+            'release_status': os.path.join(cache_dir, 'release_status.json'),
+            'formula_cache_status': os.path.join(cache_dir, 'formula_cache_status.json'),
+            'dt139_validation_status': os.path.join(cache_dir, 'dt139_validation_status.json'),
+            'standardized_manifest': os.path.join(cache_dir, 'standardized_manifest.json'),
+        },
+    }
+    _save_cache(cache_dir, 'project_state.json', state)
+    return state
+
+
+def _count_pending_confirmations(cache_dir):
+    """统计仍未解决的人工确认项。"""
+    payload = _load_cache(cache_dir, 'pending_confirmations.json') or {}
+    return len([item for item in payload.get('items', []) if not item.get('resolved')])
+
+
+def _finalize_release_status(project_dir, cache_dir, qa_result):
+    """统一生成发布状态。任何出口都必须经过此函数。"""
+    release_status = build_release_status(
+        cache_dir,
+        gate_results=_load_cache(cache_dir, 'gate_results.json') or [],
+        qa_result=qa_result,
+        recon_result=_load_cache(cache_dir, 'reconciliation_report.json') or {},
+        pending_count=_count_pending_confirmations(cache_dir),
+        formula_cache_status=ensure_formula_cache_status(cache_dir),
+        dt139_status=_load_cache(cache_dir, 'dt139_validation_status.json') or {},
+    )
+    _build_project_state(
+        project_dir,
+        release_status['status'],
+        cache_dir,
+        pending_count=_count_pending_confirmations(cache_dir),
+    )
+    return release_status
+
+
+def _write_pending_confirmations(cache_dir, items, reason='需要人工确认'):
+    """写入待确认清单。"""
+    payload = {
+        'schema_version': '1.0',
+        'status': 'BLOCKED_CONFIRMATION',
+        'reason': reason,
+        'items': items,
+        'created_at': datetime.now().isoformat(),
+    }
+    _save_cache(cache_dir, 'pending_confirmations.json', payload)
+    return payload
+
+
+def _normalize_mapping_codes(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(',') if v.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _build_mapping_candidates(label, subjects, max_n=8):
+    """为待确认映射项提供候选编码。"""
+    candidates = []
+    seen = set()
+    for s in subjects or []:
+        code = str(s.get('code', '')).strip()
+        name = str(s.get('name', '')).strip()
+        if not code or code in seen:
+            continue
+        if label in name or name in label:
+            candidates.append({'code': code, 'name': name})
+            seen.add(code)
+        if len(candidates) >= max_n:
+            break
+    return candidates
+
+
+def _apply_mapping_overrides(d1d2d3, cache_dir, subjects):
+    """将确认后的映射覆盖应用到d1d2d3映射。"""
+    overrides = _load_cache(cache_dir, 'mapping_overrides.json') or {}
+    mappings = overrides.get('mappings', {}) if isinstance(overrides, dict) else {}
+    if not isinstance(mappings, dict) or not mappings:
+        return {'applied': 0, 'skipped': 0}
+
+    valid_codes = {str(s.get('code', '')).strip() for s in (subjects or []) if s.get('code')}
+    d1_to_d2 = d1d2d3.setdefault('d1_to_d2', {})
+    unmapped = d1d2d3.setdefault('unmapped_bs_items', [])
+
+    applied = 0
+    skipped = 0
+    for label, raw_codes in mappings.items():
+        codes = _normalize_mapping_codes(raw_codes)
+        filtered = []
+        for c in codes:
+            if c in valid_codes and c not in filtered:
+                filtered.append(c)
+        if not filtered:
+            skipped += 1
+            continue
+        d1_to_d2[str(label)] = filtered
+        if label in unmapped:
+            unmapped = [x for x in unmapped if x != label]
+            d1d2d3['unmapped_bs_items'] = unmapped
+        applied += 1
+
+    _save_cache(
+        cache_dir,
+        'mapping_override_apply_report.json',
+        {
+            'applied': applied,
+            'skipped': skipped,
+            'timestamp': datetime.now().isoformat(),
+        },
+    )
+    return {'applied': applied, 'skipped': skipped}
+
+
+def _count_nonzero_subjects(subjects):
+    arr = subjects if isinstance(subjects, list) else []
+    count = 0
+    for s in arr:
+        try:
+            bal = float(s.get('balance', 0) or 0)
+        except (TypeError, ValueError):
+            bal = 0
+        if abs(bal) > 0.01:
+            count += 1
+            continue
+        # DT-FIX: 喜发格式——balance=0但ending_debit/ending_credit有值的科目也算非零
+        try:
+            ed = float(s.get('ending_debit', 0) or 0)
+            ec = float(s.get('ending_credit', 0) or 0)
+            if abs(ed) > 0.01 or abs(ec) > 0.01:
+                count += 1
+        except (TypeError, ValueError):
+            pass
+    return count
+
+
+def _write_standardized_manifest(
+    project_dir,
+    cache_dir,
+    source_mode,
+    subjects=None,
+    bs_balances=None,
+    asset_register=None,
+    journal=None,
+    auxiliary_summary=None,
+    pdf_extractions=None,
+    warnings=None,
+):
+    """写入统一标准化工件，作为后续流程唯一输入快照。"""
+    subjects = subjects or []
+    bs_balances = bs_balances or {}
+    asset_register = asset_register or {}
+    journal = journal or {}
+    auxiliary_summary = auxiliary_summary or {}
+    pdf_extractions = pdf_extractions or {}
+    warnings = warnings or []
+
+    source_files = []
+    for pat in ('*.xlsx', '*.xls', '*.pdf'):
+        source_files.extend(sorted(glob.glob(os.path.join(project_dir, pat))))
+
+    payload = {
+        'schema_version': '1.0',
+        'created_at': datetime.now().isoformat(),
+        'source_mode': source_mode,
+        'sources': [
+            {
+                'path': p,
+                'name': os.path.basename(p),
+            }
+            for p in source_files
+        ],
+        'trial_balance': {
+            'subjects_count': len(subjects) if isinstance(subjects, list) else 0,
+            'subjects': subjects if isinstance(subjects, list) else [],
+        },
+        'balance_sheet': bs_balances,
+        'fixed_assets': asset_register if isinstance(asset_register, dict) else {},
+        'journal': journal if isinstance(journal, dict) else {},
+        'auxiliary_ledgers': auxiliary_summary if isinstance(auxiliary_summary, dict) else {},
+        'pdf_extractions': pdf_extractions if isinstance(pdf_extractions, dict) else {},
+        'warnings': warnings,
+    }
+    _save_cache(cache_dir, 'standardized_manifest.json', payload)
+    return payload
+
+
+def _gate_pass_or_raise(gate_result):
+    """Gate统一阻断: 非passed一律阻断。"""
+    status = gate_result.get('status')
+    if status != 'passed':
+        raise RuntimeError(f'Gate阻断: {gate_result}')
+
+
 # ============================================================
 
 # ============================================================
@@ -168,7 +406,8 @@ def _load_from_standardized(project_dir, cache_dir):
         dict: 包含subjects, bs_balances, d1d2d3等所有缓存所需的原始数据
         如果标准化文件不存在或加载失败，返回None
     """
-    import openpyxl as _opx
+    import openpyxl
+    from openpyxl.workbook.properties import CalcProperties as _opx
     std_path = os.path.join(project_dir, '标准化财务数据汇总.xlsx')
     if not os.path.exists(std_path):
         return None
@@ -429,17 +668,6 @@ def _classify_asset_to_sheet(name, spec, dept, cost):
     if any(kw in combined for kw in electronic_kw):
         return '4-8-6电子设备'
     
-    # 房屋建筑物判断
-    building_kw = ['房屋', '厂房', '车间', '仓库', '办公楼', '宿舍', '食堂', '门卫',
-                   '建筑物', '构筑物', '棚', '围墙', '道路', '场地', '地坪', '停车']
-    if any(kw in combined for kw in building_kw):
-        return '4-8-1房屋建筑物'
-    
-    # 管道沟槽判断
-    pipe_kw = ['管道', '沟槽', '管线', '管网', '给水', '排水', '电缆沟']
-    if any(kw in combined for kw in pipe_kw):
-        return '4-8-3管道沟槽'
-    
     # 默认机器设备
     return '4-8-4机器设备'
 
@@ -584,7 +812,8 @@ def _extract_settings_from_std(subjects, bs_balances, project_dir):
         except Exception:
             pass
     if not settings['valuation_date']:
-        settings['valuation_date'] = '2023-12-31'  # 兜底默认
+        # 禁止默认填充日期，交由待确认清单处理
+        settings['valuation_date'] = ''
     
     # 从资产负债表推断行业类型
     if bs_balances:
@@ -594,6 +823,26 @@ def _extract_settings_from_std(subjects, bs_balances, project_dir):
             settings['industry_type'] = '制造业'
     
     return settings
+
+# Phase -1.5: 标准化桥接
+# ============================================================
+
+def _run_pre_phase_normalization(project_dir, args):
+    """在Phase 0前尝试标准化输入；失败时保留内置解析器降级路径。"""
+    try:
+        from normalize_input import run_normalization
+        return run_normalization(
+            project_dir,
+            force=bool(getattr(args, 'force', False)),
+        )
+    except Exception as exc:
+        print(f'  ⚠️ Phase -1.5标准化桥接失败，降级使用Phase 0内置解析器: {exc}')
+        return {
+            'phase': '-1.5',
+            'status': 'fallback',
+            'warnings': [str(exc)],
+        }
+
 
 # Phase 0: 输入确认与数据源解析
 # ============================================================
@@ -611,6 +860,7 @@ def phase0(project_dir, args):
     0.6 数据分类+重分类(DT-117/DT-118) → data_classification.json + reclassification.json
     0.7 设定信息填写(DT-121) → settings_info.json
     """
+    _run_pre_phase_normalization(project_dir, args)
     cache_dir = _cache_path(project_dir)
     
     # ── DT-ARCH: 标准化数据优先加载 ──
@@ -620,11 +870,60 @@ def phase0(project_dir, args):
         
         # 写入subjects.json
         _save_cache(cache_dir, 'subjects.json', std_data['subjects'])
+        std_nonzero = _count_nonzero_subjects(std_data['subjects'])
+        if std_nonzero == 0:
+            pending_items = [{
+                'id': 'PARSE-SB-001',
+                'type': 'source_parse_error',
+                'status': 'pending',
+                'reason': '标准化科目余额全部为0，疑似数据源解析失败',
+                'source': 'subjects.json',
+                'candidate_targets': [],
+                'evidence': ['subjects.json.balance'],
+            }]
+            _write_pending_confirmations(cache_dir, pending_items, reason='科目余额解析异常')
+            _build_project_state(project_dir, 'BLOCKED_CONFIRMATION', cache_dir, pending_count=len(pending_items))
+            return {
+                'phase': 0,
+                'status': 'blocked_confirmation',
+                'source': 'standardized',
+                'pending_count': len(pending_items),
+            }
         
         # BS数据: 从原始BS文件解析（标准化BS可能存在解析偏差）
         # 搜索原始BS文件（资产负债表/财务报表.xlsx）
         import glob as _glob
         bs_files = _glob.glob(os.path.join(project_dir, '*资产负债表*')) + _glob.glob(os.path.join(project_dir, '*财务报表*'))
+        # r9: 尝试把 .xls 转 .xlsx
+        _xls_files = _glob.glob(os.path.join(project_dir, '*.xls')) + _glob.glob(os.path.join(project_dir, '*.XLS'))
+        for _xls_f in _xls_files:
+            if not bs_files or not any('资产负债表' in os.path.basename(f) for f in bs_files):
+                _base = os.path.splitext(_xls_f)[0]
+                _xlsx_f = _base + '.xlsx'
+                if not os.path.exists(_xlsx_f):
+                    try:
+                        import xlrd
+                        _wb_old = xlrd.open_workbook(_xls_f)
+                        _wb_new = __import__('openpyxl').Workbook()
+                        _first = True
+                        for _sn in _wb_old.sheet_names():
+                            _ws_old = _wb_old.sheet_by_name(_sn)
+                            if _first:
+                                _ws_new = _wb_new.active
+                                _ws_new.title = _sn[:31]
+                                _first = False
+                            else:
+                                _ws_new = _wb_new.create_sheet(title=_sn[:31])
+                            for _r in range(_ws_old.nrows):
+                                for _c in range(_ws_old.ncols):
+                                    _ws_new.cell(_r+1, _c+1, _ws_old.cell_value(_r, _c))
+                        _wb_new.save(_xlsx_f)
+                        print(f'  🔄 已自动转换 .xls → .xlsx: {os.path.basename(_xlsx_f)}')
+                        bs_files.append(_xlsx_f)
+                    except ImportError:
+                        print('  ⚠️ xlrd 未安装，无法转换 .xls 文件')
+                    except Exception as _e:
+                        print(f'  ⚠️ .xls 转换失败: {_e}')
         if not bs_files:
             # DT-210: 内部结构确认法搜索BS文件
             import openpyxl as _opx
@@ -659,6 +958,9 @@ def phase0(project_dir, args):
         
         # 构建并写入d1d2d3_mapping.json
         d1d2d3 = _build_mapping_from_standardized(bs_balances, std_data['subjects'])
+        override_result = _apply_mapping_overrides(d1d2d3, cache_dir, std_data['subjects'])
+        if override_result.get('applied'):
+            print(f'  映射覆盖已应用: {override_result["applied"]}项')
         _save_cache(cache_dir, 'd1d2d3_mapping.json', d1d2d3)
         print(f'  D1→D2映射: {len(d1d2d3.get("d1_to_d2", {}))}个')
         print(f'  D2→D3映射: {len(d1d2d3.get("d2_to_d3", {}))}个')
@@ -673,7 +975,8 @@ def phase0(project_dir, args):
         
         # 写入辅助缓存（标准化模式下的简化版本）
         _save_cache(cache_dir, 'execution_mode.json', {'mode': 'complete', 'source': 'standardized'})
-        _save_cache(cache_dir, 'auxiliary_balance_summary.json', {'sheet_count': 0, 'total_objects': 0})
+        aux_summary = {'sheet_count': 0, 'total_objects': 0}
+        _save_cache(cache_dir, 'auxiliary_balance_summary.json', aux_summary)
         _save_cache(cache_dir, 'data_classification.json', {'source': 'standardized'})
         _save_cache(cache_dir, 'reclassification.json', {'items': []})
         
@@ -683,6 +986,50 @@ def phase0(project_dir, args):
         print(f'  被评估单位: {settings.get("company_name", "未提取")}')
         print(f'  评估基准日: {settings.get("valuation_date", "未提取")}')
         
+        pending_items = []
+        if not settings.get('valuation_date'):
+            pending_items.append({
+                'id': 'VAL-DATE-001',
+                'type': 'valuation_date',
+                'status': 'pending',
+                'reason': '无法从标准化/原始报表提取评估基准日',
+                'candidate_targets': [],
+                'evidence': ['settings_info.json.valuation_date'],
+            })
+        for label in d1d2d3.get('unmapped_bs_items', []):
+            pending_items.append({
+                'id': f'MAP-BS-{len(pending_items)+1:03d}',
+                'type': 'subject_mapping',
+                'status': 'pending',
+                'reason': 'BS科目无法映射到科目余额表编码',
+                'source': label,
+                'candidate_targets': _build_mapping_candidates(label, std_data.get('subjects', [])),
+                'evidence': ['d1d2d3_mapping.json.unmapped_bs_items'],
+            })
+
+        _write_standardized_manifest(
+            project_dir=project_dir,
+            cache_dir=cache_dir,
+            source_mode='standardized',
+            subjects=std_data.get('subjects', []),
+            bs_balances=bs_balances,
+            asset_register=std_data.get('asset_register', {}),
+            journal=std_data.get('journal', {}),
+            auxiliary_summary=aux_summary,
+            pdf_extractions={},
+            warnings=[it.get('reason', '') for it in pending_items],
+        )
+
+        if pending_items:
+            _write_pending_confirmations(cache_dir, pending_items)
+            _build_project_state(project_dir, 'BLOCKED_CONFIRMATION', cache_dir, pending_count=len(pending_items))
+            return {
+                'phase': 0,
+                'status': 'blocked_confirmation',
+                'source': 'standardized',
+                'pending_count': len(pending_items),
+            }
+
         # 输出缓存文件清单
         print('\n' + '-'*40)
         print('Phase 0 完成（标准化模式）！缓存文件清单:')
@@ -691,6 +1038,7 @@ def phase0(project_dir, args):
                 size = os.path.getsize(os.path.join(cache_dir, f))
                 print(f'  ✓ {f} ({size:,} bytes)')
         
+        _build_project_state(project_dir, 'READY_TO_FILL', cache_dir, pending_count=0)
         return {
             'phase': 0,
             'status': 'completed',
@@ -714,22 +1062,26 @@ def phase0(project_dir, args):
     # 例如"河南平煤神马平绿置业有限公司.xlsx"，文件名无关键词但内部Row1含"资产负债表"
     if not bs_files:
         import openpyxl as _opx
-        _exclude_keywords = ['科目余额', '序时账', '明细账', '凭证', '评估明细表', '底稿', '抽凭', '辅助']
+        _exclude_keywords = ['科目余额', '序时账', '序时簿', '明细账', '凭证', '评估明细表', '底稿', '抽凭', '辅助', '余额表', '折旧']
         _candidate_xlsx = [f for f in glob.glob(os.path.join(project_dir, '*.xlsx'))
                            if not any(kw in os.path.basename(f) for kw in _exclude_keywords)]
         for _cand in _candidate_xlsx:
             try:
                 _wb = _opx.load_workbook(_cand, data_only=True)
-                _ws = _wb[_wb.sheetnames[0]]
-                # 检查前5行是否含"资产负债表"关键词
-                for _r in range(1, min(_ws.max_row + 1, 6)):
-                    for _c in range(1, min(_ws.max_column + 1, 10)):
-                        _v = _ws.cell(row=_r, column=_c).value
-                        if _v and isinstance(_v, str) and '资产负债表' in _v:
-                            bs_files.append(_cand)
+                # 优先检查sheet名称，其次检查第一sheet内容
+                _found_bs = any('资产负债表' in sn for sn in _wb.sheetnames)
+                if _found_bs:
+                    bs_files.append(_cand)
+                else:
+                    _ws = _wb[_wb.sheetnames[0]]
+                    for _r in range(1, min(_ws.max_row + 1, 6)):
+                        for _c in range(1, min(_ws.max_column + 1, 10)):
+                            _v = _ws.cell(row=_r, column=_c).value
+                            if _v and isinstance(_v, str) and '资产负债表' in _v:
+                                bs_files.append(_cand)
+                                break
+                        if bs_files:
                             break
-                    if bs_files:
-                        break
                 _wb.close()
             except Exception:
                 pass
@@ -749,6 +1101,24 @@ def phase0(project_dir, args):
         subjects = _parse_subject_balance(sb_files[0])
         _save_cache(cache_dir, 'subjects.json', subjects)
     print(f'  解析科目数: {len(subjects)}')
+    nonzero_subjects = _count_nonzero_subjects(subjects)
+    if nonzero_subjects == 0:
+        pending_items = [{
+            'id': 'PARSE-SB-001',
+            'type': 'source_parse_error',
+            'status': 'pending',
+            'reason': '科目余额表解析结果全部为0，疑似列位识别错误',
+            'source': os.path.basename(sb_files[0]) if sb_files else '科目余额表',
+            'candidate_targets': [],
+            'evidence': ['subjects.json.balance'],
+        }]
+        _write_pending_confirmations(cache_dir, pending_items, reason='科目余额解析异常')
+        _build_project_state(project_dir, 'BLOCKED_CONFIRMATION', cache_dir, pending_count=len(pending_items))
+        return {
+            'phase': 0,
+            'status': 'blocked_confirmation',
+            'pending_count': len(pending_items),
+        }
 
     # --- Step 0.3: 资产负债表解析+DT-139自校验 ---
     print('\n[Step 0.3] 资产负债表解析+DT-139自校验')
@@ -760,7 +1130,7 @@ def phase0(project_dir, args):
         _save_cache(cache_dir, 'bs_balances.json', bs_balances)
 
     # DT-139强制自校验
-    _validate_bs(bs_balances)
+    _validate_bs(bs_balances, cache_dir)
 
     # --- Step 0.4: PDF数据源自动识别与提取 (DT-211) ---
     print('\n[Step 0.4] PDF数据源自动识别与提取 (DT-211)')
@@ -778,6 +1148,51 @@ def phase0(project_dir, args):
           f'银行存款记录: {pdf_result.get("records_count", 0)}条, '
           f'需多模态: {pdf_result.get("multimodal_count", 0)}个')
 
+    # --- Step 0.4b: 固定资产台账逐行解析 → asset_register_by_sheet.json ---
+    print('\n[Step 0.4b] 固定资产台账逐行解析')
+    _ar_cache = _load_cache(cache_dir, 'asset_register_by_sheet.json')
+    if _ar_cache:
+        total_ar = sum(len(v) for v in _ar_cache.values())
+        print(f'  [CACHE] 命中缓存: {total_ar}项')
+    else:
+        fa_glob = glob.glob(os.path.join(project_dir, '*固定资产*')) + \
+                  glob.glob(os.path.join(project_dir, '*资产台账*')) + \
+                  glob.glob(os.path.join(project_dir, '*折旧*')) + \
+                  glob.glob(os.path.join(project_dir, '*卡片*'))
+        if fa_glob:
+            fa_path = fa_glob[0]
+            try:
+                from fix_asset_register_bridge import build_asset_register_by_sheet
+                build_asset_register_by_sheet(fa_path, cache_dir)
+            except ImportError:
+                print(f'  ⚠️ fix_asset_register_bridge 未找到，跳过')
+            except Exception as e:
+                print(f'  ⚠️ 固定资产解析失败: {e}')
+        else:
+            print('  ⚠️ 未找到固定资产台账文件')
+
+    # --- Step 0.4c: 科目明细账标准化解析 → subledger_standardized.json ---
+    print('\n[Step 0.4c] 科目明细账标准化解析')
+    _sl_cache = _load_cache(cache_dir, 'subledger_standardized.json')
+    if _sl_cache:
+        sl_count = sum(v.get('transaction_count', 0) for v in _sl_cache.values())
+        print(f'  [CACHE] 命中缓存: {len(_sl_cache)}科目, {sl_count}笔交易')
+    else:
+        _sl_glob = glob.glob(os.path.join(project_dir, '*明细账*')) + \
+                    glob.glob(os.path.join(project_dir, '*序时账*')) + \
+                    glob.glob(os.path.join(project_dir, '*序时簿*'))
+        if _sl_glob:
+            _sl_path = _sl_glob[0]
+            try:
+                from subledger_standardizer import standardize_subledger
+                standardize_subledger(_sl_path, cache_dir)
+            except ImportError:
+                print(f'  ⚠️ subledger_standardizer 未找到，跳过')
+            except Exception as e:
+                print(f'  ⚠️ 科目明细账解析失败: {e}')
+        else:
+            print('  ⚠️ 未找到科目明细账文件')
+
     # --- Step 0.5a: D1/D2/D3映射 (DT-119) ---
     print('\n[Step 0.5a] D1/D2/D3三级递进映射 (DT-119)')
     if _load_cache(cache_dir, 'd1d2d3_mapping.json'):
@@ -785,7 +1200,10 @@ def phase0(project_dir, args):
         d1d2d3 = _load_cache(cache_dir, 'd1d2d3_mapping.json')
     else:
         d1d2d3 = _build_d1d2d3_mapping(bs_balances, subjects)
-        _save_cache(cache_dir, 'd1d2d3_mapping.json', d1d2d3)
+    override_result = _apply_mapping_overrides(d1d2d3, cache_dir, subjects)
+    if override_result.get('applied'):
+        print(f'  映射覆盖已应用: {override_result["applied"]}项')
+    _save_cache(cache_dir, 'd1d2d3_mapping.json', d1d2d3)
     print(f'  D1→D2映射: {len(d1d2d3.get("d1_to_d2", {}))}个')
     print(f'  D2→D3映射: {len(d1d2d3.get("d2_to_d3", {}))}个')
 
@@ -804,18 +1222,56 @@ def phase0(project_dir, args):
 
     # --- Step 0.6: 数据分类+重分类 (DT-117/DT-118) ---
     print('\n[Step 0.6] 数据分类+重分类映射 (DT-117/DT-118)')
+    # 先做重分类检测+调整，再基于调整后的subjects做分类
+    _reclass_from_cache = _load_cache(cache_dir, 'reclassification.json')
+    if _reclass_from_cache:
+        reclass = _reclass_from_cache
+    else:
+        reclass = _build_reclassification(subjects)
+        _save_cache(cache_dir, 'reclassification.json', reclass)
+    print(f'  重分类项目: {len(reclass.get("items", []))}个')
+    # DT-FIX: 应用重分类调整——仅在首次构建时执行，避免resume重复调整导致金额加倍
+    _reclass_items = reclass.get('items', [])
+    if _reclass_items and not _reclass_from_cache:
+        for _rc in _reclass_items:
+            _src_code = _rc.get('source_code', '')
+            _amt = _rc.get('reclass_amount', 0)
+            if not _src_code or _amt <= 0:
+                continue
+            for _s in (subjects if isinstance(subjects, list) else subjects.get('subjects', [])):
+                if str(_s.get('code', '')) == _src_code:
+                    if _s.get('ending_debit', 0) > 0:
+                        _s['ending_debit'] = max(_s['ending_debit'] - _amt, 0)
+                    if _s.get('ending_credit', 0) > 0:
+                        _s['ending_credit'] = max(_s['ending_credit'] - _amt, 0)
+                    # 同步清零balance字段（subject_sheet_mapping/data_loader使用它）
+                    _s['balance'] = 0
+                    break
+        # 重分类金额加到目标科目
+        for _rc in _reclass_items:
+            _tgt_name = _rc.get('target_name', '')
+            _amt = _rc.get('reclass_amount', 0)
+            if _amt <= 0 or not _tgt_name:
+                continue
+            _tgt_prefixes = {'预付款项': '1123', '预收款项': '2203', '其他应收款': '1221',
+                             '应付账款': '2202', '应收账款': '1122', '其他应付款': '2241',
+                             '其他流动资产': '1901'}
+            _prefix = _tgt_prefixes.get(_tgt_name, '')
+            if _prefix:
+                for _st in (subjects if isinstance(subjects, list) else subjects.get('subjects', [])):
+                    if str(_st.get('code', '')) == _prefix:
+                        _st['ending_debit'] = _st.get('ending_debit', 0) + _amt
+                        _st['balance'] = _st.get('balance', 0) + _amt
+                        print(f'  ➕ {_prefix}({_tgt_name}): +{_amt:,.2f}')
+                        break
+        _save_cache(cache_dir, 'subjects.json', subjects)
+        print(f'  🔄 已应用{len(_reclass_items)}项重分类调整')
+    # 基于调整后的subjects做数据分类
     if _load_cache(cache_dir, 'data_classification.json'):
         data_class = _load_cache(cache_dir, 'data_classification.json')
     else:
         data_class = _classify_data(subjects, bs_balances, project_dir)
         _save_cache(cache_dir, 'data_classification.json', data_class)
-
-    if _load_cache(cache_dir, 'reclassification.json'):
-        reclass = _load_cache(cache_dir, 'reclassification.json')
-    else:
-        reclass = _build_reclassification(subjects)
-        _save_cache(cache_dir, 'reclassification.json', reclass)
-    print(f'  重分类项目: {len(reclass.get("items", []))}个')
 
     # --- Step 0.7: 设定信息 (DT-121) ---
     print('\n[Step 0.7] 设定信息提取 (DT-121)')
@@ -827,6 +1283,58 @@ def phase0(project_dir, args):
     print(f'  被评估单位: {settings.get("company_name", "未提取")}')
     print(f'  评估基准日: {settings.get("valuation_date", "未提取")}')
 
+    pending_items = []
+    if not settings.get('valuation_date'):
+        pending_items.append({
+            'id': 'VAL-DATE-001',
+            'type': 'valuation_date',
+            'status': 'pending',
+            'reason': '无法从报表和路径提取评估基准日',
+            'candidate_targets': [],
+            'evidence': ['settings_info.json.valuation_date'],
+        })
+    # DT-FIX: 检查mapping_overrides是否已覆盖这些label，避免resume循环
+    _existing_overrides = {}
+    try:
+        _mo = _load_cache(cache_dir, 'mapping_overrides.json') or {}
+        _existing_overrides = _mo.get('mappings', {})
+    except Exception:
+        pass
+    for label in d1d2d3.get('unmapped_bs_items', []):
+        if label in _existing_overrides:
+            continue  # 已被映射覆盖确认，跳过阻断
+        pending_items.append({
+            'id': f'MAP-BS-{len(pending_items)+1:03d}',
+            'type': 'subject_mapping',
+            'status': 'pending',
+            'reason': 'BS科目无法映射到科目余额表编码',
+            'source': label,
+            'candidate_targets': _build_mapping_candidates(label, subjects),
+            'evidence': ['d1d2d3_mapping.json.unmapped_bs_items'],
+        })
+
+    _write_standardized_manifest(
+        project_dir=project_dir,
+        cache_dir=cache_dir,
+        source_mode='raw',
+        subjects=subjects,
+        bs_balances=bs_balances,
+        asset_register=_load_cache(cache_dir, 'asset_register_by_sheet.json') or {},
+        journal=_load_cache(cache_dir, 'journal.json') or {},
+        auxiliary_summary=_load_cache(cache_dir, 'auxiliary_balance_summary.json') or {},
+        pdf_extractions=pdf_result if isinstance(pdf_result, dict) else {},
+        warnings=[it.get('reason', '') for it in pending_items],
+    )
+
+    if pending_items:
+        _write_pending_confirmations(cache_dir, pending_items)
+        _build_project_state(project_dir, 'BLOCKED_CONFIRMATION', cache_dir, pending_count=len(pending_items))
+        return {
+            'phase': 0,
+            'status': 'blocked_confirmation',
+            'pending_count': len(pending_items),
+        }
+
     # --- Phase 0 完成 ---
     print('\n' + '-'*40)
     print('Phase 0 完成！缓存文件清单:')
@@ -835,6 +1343,7 @@ def phase0(project_dir, args):
             size = os.path.getsize(os.path.join(cache_dir, f))
             print(f'  ✓ {f} ({size:,} bytes)')
 
+    _build_project_state(project_dir, 'READY_TO_FILL', cache_dir, pending_count=0)
     return {
         'phase': 0,
         'status': 'completed',
@@ -912,28 +1421,107 @@ def _parse_balance_sheet(bs_files, project_dir):
     }
 
 
-def _validate_bs(bs_data):
-    """DT-139: BS解析后强制自校验"""
+def _validate_bs(bs_data, cache_dir=None):
+    """DT-139: BS解析后强制自校验
+
+    默认容差为1.0元。项目级例外必须绑定源文件SHA256，且只能生成工作稿。
+    """
     items = bs_data.get('items', [])
 
-    # 查找关键合计项（标签可能有空格，需归一化匹配）
     total_assets = 0
     total_liab_equity = 0
 
     for item in items:
-        label = item['label'].replace(' ', '').replace('\u3000', '')  # 去空格
+        label = item['label'].replace(' ', '').replace('\u3000', '')
         val = item['ending_balance']
         if '资产总计' in label or '资产合计' in label:
             total_assets = val
         if '负债' in label and '所有者权益' in label and '总计' in label:
             total_liab_equity = val
+        elif '负债' in label and '所有者' in label and ('合计' in label or '总计' in label):
+            total_liab_equity = val  # r9: 兼容"负债和所有者合计"变体
 
     diff = abs(total_assets - total_liab_equity)
-    assert diff <= 1, (
-        f'DT-139 CRITICAL: 资产负债表会计等式不平衡！'
-        f'资产总计={total_assets:,.2f}, 负债+权益={total_liab_equity:,.2f}, 差额={diff:,.2f}'
-    )
-    print(f'  DT-139校验通过: 资产={total_assets:,.2f}, 负债+权益={total_liab_equity:,.2f}')
+    _dt139_tolerance = 1.0
+    _has_exception = False
+    _exception_reason = ''
+    _exception_error = ''
+    _source_path = bs_data.get('filepath', '')
+    _source_sha256 = ''
+    if _source_path and os.path.isfile(_source_path):
+        _source_sha256 = _sha256_file(_source_path)
+
+    if cache_dir:
+        _exc_path = os.path.join(cache_dir, 'dt139_exception.json')
+        if os.path.exists(_exc_path):
+            try:
+                with open(_exc_path, 'r', encoding='utf-8') as _f:
+                    _exc = json.load(_f)
+                _exc_tolerance = float(_exc.get('tolerance', 0))
+                _expected_sha256 = str(_exc.get('source_sha256', '')).strip().lower()
+                _expected_name = str(_exc.get('source_file', '')).strip()
+                _reason = str(_exc.get('reason', '')).strip()
+                if not _expected_sha256:
+                    _exception_error = '缺少source_sha256'
+                elif not _source_sha256:
+                    _exception_error = '无法计算BS源文件SHA256'
+                elif _expected_sha256 != _source_sha256.lower():
+                    _exception_error = 'source_sha256与当前BS源文件不一致'
+                elif _expected_name and _expected_name != os.path.basename(_source_path):
+                    _exception_error = 'source_file与当前BS源文件名不一致'
+                elif _exc_tolerance <= 1.0:
+                    _exception_error = '例外容差必须大于默认1.0元'
+                elif not _reason:
+                    _exception_error = '缺少例外原因reason'
+                else:
+                    _dt139_tolerance = _exc_tolerance
+                    _has_exception = True
+                    _exception_reason = _reason
+                    print(f'  ⚠️ DT-139 项目级例外已启用: 容差={_exc_tolerance:,.0f} (来源: {_reason})')
+            except Exception as exc:
+                _exception_error = f'例外文件解析失败: {exc}'
+
+    _validation = {
+        'rule': 'DT-139',
+        'status': 'PASS',
+        'default_tolerance': 1.0,
+        'effective_tolerance': _dt139_tolerance,
+        'diff': diff,
+        'total_assets': total_assets,
+        'total_liab_equity': total_liab_equity,
+        'source_file': os.path.basename(_source_path) if _source_path else '',
+        'source_sha256': _source_sha256,
+        'exception_active': _has_exception,
+        'exception_reason': _exception_reason,
+        'exception_error': _exception_error,
+        'generated_at': datetime.now().isoformat(),
+    }
+
+    if diff > _dt139_tolerance:
+        msg = (f'DT-139 CRITICAL: 资产负债表会计等式不平衡！'
+               f'资产总计={total_assets:,.2f}, 负债+权益={total_liab_equity:,.2f}, '
+               f'差额={diff:,.2f}(容差={_dt139_tolerance:,.0f})')
+        _validation['status'] = 'FAIL'
+        if cache_dir:
+            _save_cache(cache_dir, 'dt139_validation_status.json', _validation)
+        raise AssertionError(msg)
+    elif diff > 1:
+        if not _has_exception:
+            _validation['status'] = 'FAIL'
+            if cache_dir:
+                _save_cache(cache_dir, 'dt139_validation_status.json', _validation)
+            detail = f'；例外文件无效: {_exception_error}' if _exception_error else ''
+            raise AssertionError(
+                f'DT-139 CRITICAL: 差额={diff:,.2f}超过默认容差1元，'
+                f'且无有效项目级例外{detail}'
+            )
+        _validation['status'] = 'EXCEPTION_DRAFT'
+        print(f'  ⚠️ DT-139 项目级例外命中: 差额={diff:,.2f}，最终状态仅允许DRAFT_REVIEW_REQUIRED')
+    else:
+        print(f'  DT-139校验通过: 资产={total_assets:,.2f}, 负债+权益={total_liab_equity:,.2f}')
+    if cache_dir:
+        _save_cache(cache_dir, 'dt139_validation_status.json', _validation)
+    return _validation
 
 
 def _build_d1d2d3_mapping(bs_data, subjects):
@@ -941,13 +1529,77 @@ def _build_d1d2d3_mapping(bs_data, subjects):
     d1_to_d2 = {}  # BS科目 → 科目余额表编码
     d2_to_d3 = {}  # 科目余额表编码 → 辅助数据源
 
+    BS_TO_CODE_PREFIX = {
+        '货币资金': ['1001', '1002', '1003', '1004', '1012'],
+        '应收票据': ['1121'],
+        '应收账款': ['1122'],
+        '预付款项': ['1123', '1124'],
+        '其他应收款': ['1221'],
+        '存货': ['1401', '1402', '1403', '1404', '1405', '1406', '1407', '1408', '1409', '1410', '1411', '1412', '1413', '1421', '1471'],
+        '固定资产': ['1601', '1602'],
+        '在建工程': ['1604'],
+        '无形资产': ['1701', '1702'],
+        '长期待摊费用': ['1801'],
+        '递延所得税资产': ['1811'],
+        '短期借款': ['2001'],
+        '应付票据': ['2201'],
+        '应付账款': ['2202'],
+        '预收款项': ['2203', '2204'],
+        '应付职工薪酬': ['2211'],
+        '应交税费': ['2221'],
+        '应付利息': ['2231'],
+        '其他应付款': ['2241'],
+        '长期借款': ['2501'],
+        '实收资本（或股本）': ['4001'],
+        '资本公积': ['4002'],
+        '盈余公积': ['4101'],
+        '未分配利润': ['4103', '4104'],
+        '长期应付款': ['2701'],
+        '预计负债': ['2801'],
+        '递延收益': ['2401'],
+        '递延所得税负债': ['2901'],
+        '合同负债': ['2205'],
+        '合同资产': ['1125'],
+        '应收款项融资': ['1126'],
+        '交易性金融资产': ['1101'],
+        '交易性金融负债': ['2101'],
+    }
+
+    def _is_summary_label(text):
+        txt = str(text or '').replace(' ', '').strip()
+        return ('合计' in txt) or ('总计' in txt) or txt.endswith('：') or txt.endswith(':')
+
+    subjects = subjects or []
+    all_codes = [str(s.get('code', '')).strip() for s in subjects if s.get('code')]
+
     # D1→D2: BS科目 → 科目余额表末级科目
     for item in bs_data.get('items', []):
-        label = item['label']
+        label = str(item.get('label', '')).strip()
+        if not label or _is_summary_label(label):
+            continue
+
         matched = []
-        for s in subjects:
-            if s['name'] == label or label.startswith(s['name']):
-                matched.append(s['code'])
+        # 先按常见资产负债表科目→科目前缀做映射
+        for bs_key, prefixes in BS_TO_CODE_PREFIX.items():
+            if label == bs_key or label.replace(' ', '') == bs_key.replace(' ', ''):
+                for code in all_codes:
+                    if any(code.startswith(pfx) for pfx in prefixes):
+                        matched.append(code)
+                if not matched:
+                    matched.extend(prefixes)
+                break
+
+        # 回退：名称匹配
+        if not matched:
+            for s in subjects:
+                s_name = str(s.get('name', '')).strip()
+                s_code = str(s.get('code', '')).strip()
+                if not s_code:
+                    continue
+                if s_name == label or label.startswith(s_name):
+                    matched.append(s_code)
+
+        matched = sorted(set(matched))
         if matched:
             d1_to_d2[label] = matched
 
@@ -963,8 +1615,11 @@ def _build_d1d2d3_mapping(bs_data, subjects):
         'd1_to_d2': d1_to_d2,
         'd2_to_d3': d2_to_d3,
         'unmapped_bs_items': [
-            item['label'] for item in bs_data.get('items', [])
-            if item['label'] not in d1_to_d2
+            str(item.get('label', '')).strip()
+            for item in bs_data.get('items', [])
+            if str(item.get('label', '')).strip()
+            and (str(item.get('label', '')).strip() not in d1_to_d2)
+            and (not _is_summary_label(item.get('label', '')))
         ],
     }
 
@@ -972,17 +1627,13 @@ def _build_d1d2d3_mapping(bs_data, subjects):
 def _ensure_pdf_deps():
     """DT-211: 检测并自动安装PDF提取依赖包
 
-    检测 pdfplumber/pdf2image/Pillow 是否已安装，缺失时自动 pip install。
-    安装目标为当前Python解释器的site-packages，不污染全局环境。
+    检测 pdfplumber/pdf2image/Pillow 是否已安装，不做运行时安装。
     同时配置poppler PATH（Windows捆绑预编译版）。
 
     Returns:
         dict: {'pdfplumber': bool, 'pdf2image': bool, 'Pillow': bool,
                'poppler_configured': bool, 'installed': [list of newly installed]}
     """
-    import subprocess
-    import sys
-
     result = {
         'pdfplumber': False, 'pdf2image': False, 'Pillow': False,
         'poppler_configured': False, 'installed': [],
@@ -1002,52 +1653,29 @@ def _ensure_pdf_deps():
         except ImportError:
             _missing.append(pip_name)
 
-    # 2. 自动安装缺失的包
+    # 2. 缺失依赖时仅报告，不在运行时安装
     if _missing:
-        print(f'  🔧 自动安装PDF依赖: {", ".join(_missing)}')
-        try:
-            cmd = [sys.executable, '-m', 'pip', 'install', '--quiet'] + _missing
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if proc.returncode == 0:
-                # 验证安装成功
-                for pip_name, import_name in _checks:
-                    if not result[pip_name]:
-                        try:
-                            __import__(import_name)
-                            result[pip_name] = True
-                            result['installed'].append(pip_name)
-                        except ImportError:
-                            pass
-                if result['installed']:
-                    print(f'  ✅ 已安装: {", ".join(result["installed"])}')
-                else:
-                    print(f'  ⚠️ 安装可能失败，请手动执行: pip install {" ".join(_missing)}')
-            else:
-                print(f'  ⚠️ pip安装失败: {proc.stderr[:200]}')
-                print(f'  请手动执行: pip install {" ".join(_missing)}')
-        except Exception as e:
-            print(f'  ⚠️ 自动安装异常: {e}')
-            print(f'  请手动执行: pip install {" ".join(_missing)}')
+        print(f'  ⚠️ 缺失PDF依赖: {", ".join(_missing)}')
+        print(f'  请先安装后再执行: pip install {" ".join(_missing)}')
 
-    # 3. 配置poppler PATH（Windows捆绑预编译版）
-    _poppler_bin = os.path.normpath(os.path.join(
-        SCRIPT_DIR, 'Release-26.02.0-0', 'poppler-26.02.0', 'Library', 'bin'
-    ))
-    if os.path.isdir(_poppler_bin):
+    # 3. 配置poppler PATH（系统安装或POPPLER_BIN环境变量）
+    _env_poppler = os.environ.get('POPPLER_BIN', '').strip()
+    if _env_poppler and os.path.isdir(_env_poppler):
         current_path = os.environ.get('PATH', '')
-        if _poppler_bin not in current_path:
-            os.environ['PATH'] = _poppler_bin + os.pathsep + current_path
+        if _env_poppler not in current_path:
+            os.environ['PATH'] = _env_poppler + os.pathsep + current_path
         result['poppler_configured'] = True
     else:
-        # 非Windows或未捆绑poppler：检查系统是否有pdftotext/pdftoppm
         import shutil
         if shutil.which('pdftotext') or shutil.which('pdftoppm'):
             result['poppler_configured'] = True
         else:
             print('  ⚠️ poppler未找到，pdf2image将无法工作')
-            print('  Windows: 确保Release-26.02.0-0/poppler-26.02.0/Library/bin/存在')
-            print('  Linux: sudo apt install poppler-utils')
-            print('  Mac:   brew install poppler')
+            print('  可选方案:')
+            print('  - 设置环境变量 POPPLER_BIN 指向poppler可执行目录')
+            print('  - Linux: sudo apt install poppler-utils')
+            print('  - Mac:   brew install poppler')
+            print('  - Windows: choco install poppler 或手工安装后加入PATH')
 
     return result
 
@@ -1475,12 +2103,15 @@ def _build_reclassification(subjects):
     }
 
     for s in subjects:
-        code_prefix = str(s['code'])[:4]
+        code = str(s.get('code', ''))
+        code_prefix = code[:4]
         if code_prefix not in reclass_rules:
             continue
         rule = reclass_rules[code_prefix]
-        balance = s['balance']
+        balance = s.get('balance', 0)
         direction = s.get('direction', '')
+        ending_debit = s.get('ending_debit', 0)
+        ending_credit = s.get('ending_credit', 0)
 
         # DT-218修复: 正确检测反方向余额
         # 借方余额: 资产正常=借方正数, 负债正常=贷方正数
@@ -1488,38 +2119,38 @@ def _build_reclassification(subjects):
         # 贷方余额: 负债正常=贷方正数, 资产正常=借方正数
         #   异常贷方余额: 负债direction='贷'+balance<0 → 不对，贷方负数=借方余额
         needs_reclass = False
+        _reclass_amt = 0
         if rule['condition'] == 'debit_balance':
-            # 需要检测借方余额: 资产direction='借'+正数是正常的,
-            # 负债direction='贷'+负数=借方余额(异常,需重分类)
-            if direction == '贷' and balance is not None and balance < 0:
+            # DT-FIX: 借方余额——负债类科目有ending_debit>0即为反方向
+            if ending_debit > 0 and ending_credit == 0:
                 needs_reclass = True
-            elif direction == '借' and balance is not None and balance < 0:
-                # 资产借方负数=贷方余额(异常)——但condition是debit_balance
-                # 这种情况实际上也是反方向，不需要重分类到这里
-                pass
-            # DT-218补丁: 资产direction='借'+balance>0也是正常，不重分类
-            # 但direction='平'且balance<0，也是借方余额
-            elif direction == '平' and balance is not None and balance < 0:
+                _reclass_amt = ending_debit
+            elif direction == '贷' and balance < 0:
                 needs_reclass = True
+                _reclass_amt = abs(balance)
+            elif direction == '平' and balance < 0:
+                needs_reclass = True
+                _reclass_amt = abs(balance)
         elif rule['condition'] == 'credit_balance':
-            # 需要检测贷方余额: 负债direction='贷'+正数是正常的,
-            # 资产direction='借'+负数=贷方余额(异常,需重分类)
-            if direction == '借' and balance is not None and balance < 0:
+            # DT-FIX: 贷方余额——资产类科目有ending_credit>0即为反方向
+            if ending_credit > 0 and ending_debit == 0:
                 needs_reclass = True
-            elif direction == '贷' and balance is not None and balance < 0:
-                # 负债贷方负数=借方余额——但condition是credit_balance
-                pass
+                _reclass_amt = ending_credit
+            elif direction == '借' and balance < 0:
+                needs_reclass = True
+                _reclass_amt = abs(balance)
 
-        # DT-218修复: 将append移出if/elif块，确保debit_balance和credit_balance都能触发
-        if needs_reclass:
+        if needs_reclass and _reclass_amt > 0:
             items.append({
                 'source_code': s['code'],
                 'source_name': s['name'],
                 'source_balance': balance,
                 'source_direction': direction,
+                'ending_debit': ending_debit,
+                'ending_credit': ending_credit,
                 'target_sheet': rule['target_sheet'],
                 'target_name': rule['target_name'],
-                'reclass_amount': abs(balance),
+                'reclass_amount': _reclass_amt,
                 'description': rule['description'],
             })
 
@@ -1704,7 +2335,6 @@ def _find_detail_table(project_dir):
 
 def run_gate(project_dir, gate_name, args):
     """运行Gate验证"""
-    import sys as _sys
     import os as _os
     # 确保从本地gate_validator导入，而不是valuation-common版本
     _local_gv = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'gate_validator.py')
@@ -1713,14 +2343,26 @@ def run_gate(project_dir, gate_name, args):
         _spec = _iu.spec_from_file_location('gate_validator_local', _local_gv)
         _gv_mod = _iu.module_from_spec(_spec)
         _spec.loader.exec_module(_gv_mod)
-        _gate_map = {'G1': _gv_mod.gate_G1, 'G1F': _gv_mod.gate_G1_Format,
-                     'G2': _gv_mod.gate_G2, 'G3': _gv_mod.gate_G3}
+        _gate_map = {
+            'G0': _gv_mod.gate_G0,
+            'G1': _gv_mod.gate_G1,
+            'G1F': _gv_mod.gate_G1_Format,
+            'G2': _gv_mod.gate_G2,
+            'G3': _gv_mod.gate_G3,
+            'G-DT182': _gv_mod.validate_summary_no_hardcoded,
+        }
         gate_func = _gate_map.get(gate_name)
     else:
-        from gate_validator import gate_G1, gate_G1F, gate_G2, gate_G3
-        _gate_map = {'G1': gate_G1, 'G1F': gate_G1_Format, 'G2': gate_G2, 'G3': gate_G3}
+        from gate_validator import gate_G0, gate_G1, gate_G1_Format, gate_G2, gate_G3, validate_summary_no_hardcoded
+        _gate_map = {
+            'G0': gate_G0,
+            'G1': gate_G1,
+            'G1F': gate_G1_Format,
+            'G2': gate_G2,
+            'G3': gate_G3,
+            'G-DT182': validate_summary_no_hardcoded,
+        }
         gate_func = _gate_map.get(gate_name)
-    import inspect
 
     xlsx_path = args.xlsx_path or _find_detail_table(project_dir)
     if not os.path.exists(xlsx_path):
@@ -1731,21 +2373,52 @@ def run_gate(project_dir, gate_name, args):
 
     cache_dir = os.path.join(project_dir, '_dt_cache')
     try:
-        # 直接调用本地gate_G3，使用xlsx_path作为参数
         if gate_func is None:
             print(f'⚠️ Gate {gate_name}: 未知的Gate类型')
             return {'gate': gate_name, 'status': 'error', 'reason': f'unknown gate {gate_name}'}
-        passed, violations = gate_func(xlsx_path)
+        bs_path = None
+        sb_path = None
+        aux_data = None
+
+        bs_cache = _load_cache(cache_dir, 'bs_balances.json')
+        if isinstance(bs_cache, dict):
+            bs_path = bs_cache.get('filepath')
+        sb_cache = _load_cache(cache_dir, 'subjects_normalized.json')
+        if isinstance(sb_cache, dict):
+            sb_path = sb_cache.get('filepath')
+
+        if gate_name == 'G0':
+            aux_data = {
+                'auxiliary_balance': _load_cache(cache_dir, 'auxiliary_balance_all.json') or {},
+                'pdf_extraction_status': (_load_cache(cache_dir, 'pdf_extractions.json') or {}).get('classified', {}),
+                'pdf_usage_status': {},
+            }
+            passed, violations = gate_func(xlsx_path, bs_path=bs_path, sb_path=sb_path, aux_data=aux_data)
+        elif gate_name == 'G2':
+            passed, violations = gate_func(xlsx_path, bs_path=bs_path, sb_path=sb_path, has_journal=bool(_load_cache(cache_dir, 'journal.json')))
+        elif gate_name == 'G3':
+            passed, violations = gate_func(xlsx_path, bs_path=bs_path, tolerance=0.01)
+        else:
+            passed, violations = gate_func(xlsx_path)
+
         if not passed:
             criticals = [v for v in violations if v.get('severity') == 'CRITICAL'] if violations else []
             if criticals:
                 print(f'🚨 Gate {gate_name} FAILED: {len(criticals)}个CRITICAL')
                 for c in criticals:
                     print(f'  - {c.get("check", "")}: {c.get("message", "")}')
-            return {'gate': gate_name, 'status': 'failed', 'criticals': len(criticals) if criticals else 0}
+            result = {'gate': gate_name, 'status': 'failed', 'criticals': len(criticals) if criticals else 0}
         else:
             print(f'✅ Gate {gate_name} PASSED')
-            return {'gate': gate_name, 'status': 'passed', 'criticals': 0}
+            result = {'gate': gate_name, 'status': 'passed', 'criticals': 0}
+        prev = _load_cache(cache_dir, 'gate_results.json') or []
+        prev.append({
+            'gate': gate_name,
+            'result': result,
+            'timestamp': datetime.now().isoformat(),
+        })
+        _save_cache(cache_dir, 'gate_results.json', prev)
+        return result
     except Exception as e:
         print(f'⚠️ Gate {gate_name} 执行异常: {e}')
         return {'gate': gate_name, 'status': 'error', 'reason': str(e)}
@@ -1903,13 +2576,8 @@ def phase1(project_dir, args):
 
     # --- Gate G0 ---
     print('\n[Gate G0] 数据源完整性验证')
-    # 简化Gate：检查关键缓存文件存在
-    required_caches = ['subjects.json', 'bs_balances.json', 'subject_sheet_mapping.json']
-    missing = [f for f in required_caches if not _load_cache(cache_dir, f)]
-    if missing:
-        print(f'  🚨 G0 FAILED: 缺失缓存文件 {missing}')
-        sys.exit(1)
-    print('  ✅ G0 PASSED')
+    g0 = run_gate(project_dir, 'G0', args)
+    _gate_pass_or_raise(g0)
 
     return {'phase': 1, 'status': 'completed', 'mapped_subjects': len(mapping)}
 
@@ -1993,6 +2661,157 @@ def _write_settings_sheet(wb, settings):
 # Phase 2: 数据填写（data_loader + fill_sheet集成）
 # ============================================================
 
+def _repair_detail_sheet_bc_merges(wb):
+    """修复明细表结构行B~X合并，清理数据区残留的结构合并。
+
+    背景：
+    - 部分固定资产/在建工程模板结构行是B:D或B:E，不是统一B:C；
+    - 插行后若openpyxl扩展了结构合并，数据区会残留空白合并行（如B32:D34）。
+    """
+    try:
+        from gate_validator import find_header_structure as _find_header_structure
+    except Exception:
+        try:
+            from excel_row_ops import _find_header_structure  # 兜底：桥接到valuation-common实现
+        except Exception:
+            return 0
+
+    fixed = 0
+    struct_markers = {'合计1', '合计2', '坏账准备', '预计风险', '预计损失', '减值准备', '跌价准备'}
+
+    def _norm(v):
+        return str(v or '').replace(' ', '').replace('\u3000', '').strip()
+
+    def _is_struct_row_text(a_txt, b_txt, allow_b_fallback=False):
+        if (
+            a_txt in struct_markers or
+            ('合' in a_txt and '计' in a_txt) or
+            a_txt.startswith('减')
+        ):
+            return True
+        if allow_b_fallback:
+            return ('合' in b_txt and '计' in b_txt) or b_txt.startswith('减')
+        return False
+
+    for ws in wb.worksheets:
+        sn = ws.title
+        if sn.startswith('2-') or sn.startswith('设置') or sn.startswith('0-') or '汇总' in sn:
+            continue
+
+        struct = _find_header_structure(ws)
+        dsr = struct.get('data_start_row') or 6
+        tr = struct.get('total_row')
+        if not tr:
+            # 兜底：按B列“合计”文本定位
+            for r in range(1, min(ws.max_row + 1, 220)):
+                b_txt = _norm(ws.cell(row=r, column=2).value)
+                if '合' in b_txt and '计' in b_txt:
+                    tr = r
+                    break
+        # 兜底2：A列合计标记 + B列回退
+        if not tr:
+            for r in range(6, min(ws.max_row + 1, 220)):
+                a_txt = _norm(ws.cell(row=r, column=1).value)
+                b_txt = _norm(ws.cell(row=r, column=2).value)
+                if _is_struct_row_text(a_txt, b_txt, allow_b_fallback=True):
+                    tr = r
+                    break
+        if not tr:
+            tr = ws.max_row + 1
+
+        # 若定位到的tr仅由B列旧残留触发（A列不是结构标记），
+        # 则向后寻找首个A列结构行作为真正合计起始。
+        a_tr = _norm(ws.cell(row=tr, column=1).value) if tr <= ws.max_row else ''
+        if tr <= ws.max_row and not _is_struct_row_text(a_tr, '', allow_b_fallback=False):
+            for r in range(tr + 1, min(ws.max_row + 1, 260)):
+                a_txt = _norm(ws.cell(row=r, column=1).value)
+                if _is_struct_row_text(a_txt, '', allow_b_fallback=False):
+                    tr = r
+                    break
+
+        # 1) 清理数据区B起始的残留结构合并（B:C / B:D / B:E ...）
+        for mr in list(ws.merged_cells.ranges):
+            if mr.min_col == 2 and mr.max_col >= 3 and dsr <= mr.min_row < tr:
+                # 数据区内（合计1之前）不应存在结构合并；无条件清理
+                ws.unmerge_cells(str(mr))
+                fixed += 1
+
+        # 2) 保证结构行合并存在（列宽按sheet内现有结构合并自动推断）
+        rows_to_check = {tr} if tr <= ws.max_row else set()
+        for r in range(1, min(ws.max_row + 1, 260)):
+            a_txt = _norm(ws.cell(row=r, column=1).value)
+            b_txt = _norm(ws.cell(row=r, column=2).value)
+            is_struct = _is_struct_row_text(a_txt, b_txt, allow_b_fallback=True)
+            if is_struct:
+                rows_to_check.add(r)
+        # 额外：B列"合  计"文本的行（旧模板A列可能无标记）
+        for r in range(dsr, min(ws.max_row + 1, 220)):
+            if r in rows_to_check:
+                continue
+            b_txt = _norm(ws.cell(row=r, column=2).value)
+            if '合' in b_txt and '计' in b_txt:
+                rows_to_check.add(r)
+
+        # 以当前sheet中“结构行现有合并”推断目标宽度；没有则退回B:C
+        end_col_counter = {}
+        for r in rows_to_check:
+            for mr in ws.merged_cells.ranges:
+                if mr.min_row == r and mr.max_row == r and mr.min_col == 2 and mr.max_col >= 3:
+                    end_col_counter[mr.max_col] = end_col_counter.get(mr.max_col, 0) + 1
+        default_end_col = 3
+        if end_col_counter:
+            # 取结构行最大合并宽度，避免把B:D/B:E错误收缩成B:C
+            default_end_col = max(end_col_counter.keys())
+
+        for r in sorted(rows_to_check):
+            existing_end_col = None
+            for mr in ws.merged_cells.ranges:
+                if mr.min_row == r and mr.max_row == r and mr.min_col == 2 and mr.max_col >= 3:
+                    existing_end_col = mr.max_col
+                    break
+            target_end_col = max(default_end_col, existing_end_col or 0)
+            if existing_end_col == target_end_col:
+                continue
+            # 先清理行内覆盖B~target_end_col的冲突合并
+            for mr in list(ws.merged_cells.ranges):
+                if mr.min_row <= r <= mr.max_row and not (mr.max_col < 2 or mr.min_col > target_end_col):
+                    ws.unmerge_cells(str(mr))
+            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=target_end_col)
+            fixed += 1
+    # 兜底3：如果合计行存在但没有B起始合并，强制创建B:C合并
+    if tr is not None and tr <= ws.max_row:
+        has_any_b_merge_on_tr = any(
+            mr.min_row == tr and mr.max_row == tr and mr.min_col == 2 and mr.max_col >= 3
+            for mr in ws.merged_cells.ranges
+        )
+        if not has_any_b_merge_on_tr:
+            b_txt = _norm(ws.cell(row=tr, column=2).value)
+            if '合' in b_txt and '计' in b_txt:
+                for mr in list(ws.merged_cells.ranges):
+                    if mr.min_row <= tr <= mr.max_row:
+                        ws.unmerge_cells(str(mr))
+                end_col = 3
+                for mr in ws.merged_cells.ranges:
+                    if mr.min_col == 2 and mr.max_col >= 3:
+                        end_col = max(end_col, mr.max_col)
+                ws.merge_cells(start_row=tr, start_column=2, end_row=tr, end_column=end_col)
+                fixed += 1
+
+    return fixed
+
+
+def _clear_formula_cache(wb):
+    """清除所有公式单元格的缓存值，确保下次打开时重新计算。
+    G3 fix: fullCalcOnLoad=1 + 清空公式缓存值(None) = Excel打开时全部重算。
+    """
+    from openpyxl.workbook.properties import CalcProperties
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith('='):
+                    cell.value = cell.value  # 保留公式，但清除缓存
+    wb.calculation = CalcProperties(fullCalcOnLoad=1)
+
 def phase2(project_dir, args):
     """Phase 2: 数据填写
 
@@ -2057,9 +2876,9 @@ def phase2(project_dir, args):
             # 如果Sheet是固定资产类且有资产台账缓存，用台账逐行数据替换科目汇总
             # DT-FIX: 扩充FA sheets列表，对于已重分配但无台账的FA sheet（如4-8-1房屋建筑物）
             # 从subject_sheet_mapping查找对应子编码并预计算净值
-            _asset_sheets = {'4-8-1房屋建筑物', '4-8-3管道沟槽', '4-8-4机器设备', '4-8-5车辆', '4-8-6电子设备'}
-            _fa_all_sheets = {'4-8-1房屋建筑物', '4-8-2构筑物', '4-8-3管道沟槽',
-                              '4-8-4机器设备', '4-8-5车辆', '4-8-6电子设备',
+            _asset_sheets = {'4-8-4机器设备', '4-8-5车辆', '4-8-6电子设备', '4-8-1房屋建筑物'}
+            _fa_all_sheets = {'4-8-4机器设备', '4-8-5车辆', '4-8-6电子设备',
+                              '4-8-1房屋建筑物', '4-8-2构筑物', '4-8-3管道沟槽',
                               '4-8-7固定资产清理'}
             if sheet_name in _asset_sheets:
                 _ar_cache = _load_cache(cache_dir, 'asset_register_by_sheet.json')
@@ -2073,26 +2892,10 @@ def phase2(project_dir, args):
                     _scfg = schema.get('subjects', {}).get(sheet_name, {})
                     # 转换为prepare_data_rows期望的格式
                     # DT-ARCH: 直接构建资产台账数据行（跳过prepare_data_rows避免汇总折旧覆盖逐项折旧）
-                    # DT-FIX: 固定资产台账按名称+原值去重（仅合并真正的重复项）
-                    _seen_sigs = set()
-                    _deduped_items = []
-                    for _a in _items:
-                        _n = str(_a.get('name', '')).strip()
-                        _c = float(_a.get('cost', 0) or 0)
-                        _sig = f'{_n}|{_c:.2f}'
-                        if _sig not in _seen_sigs:
-                            _seen_sigs.add(_sig)
-                            _deduped_items.append(_a)
-                    if len(_items) != len(_deduped_items):
-                        print(f'  [DT-FIX] FA去重: {len(_items)}项→{len(_deduped_items)}项(移除{len(_items)-len(_deduped_items)}个完全重复项)')
-                    _items = _deduped_items
-                    
                     _ar_data_rows = []
                     for _idx, _a in enumerate(_items, 1):
                         _name = str(_a.get('name', '')).strip()
-                        _asset_code = str(_a.get('asset_code', '') or '').strip()
-                        if _asset_code.lower() == 'nan':
-                            _asset_code = ""
+                        _asset_code = str(_a.get('asset_code', '')).strip()
                         _spec = str(_a.get('spec', '')).strip()
                         # 处理 'nan' 字符串
                         if _spec.lower() == 'nan':
@@ -2131,6 +2934,7 @@ def phase2(project_dir, args):
                             'code': f'1601_{_idx}',
                             '_is_contra_account_row': True,
                         }
+
                         # 填入辅助字段
                         if _start_date:
                             row['发生日期'] = _start_date
@@ -2138,12 +2942,26 @@ def phase2(project_dir, args):
                             row['使用部门'] = _dept
                         if _location:
                             row['存放地点'] = _location
-                        # DT-FIX: 固定资产明细表备注不自动填写，保持空白
+                        # 备注: 折旧方法+年限+状态
+                        remark_parts = []
+                        if _dep_method:
+                            remark_parts.append(_dep_method)
+                        if _life:
+                            remark_parts.append(f'{_life}月')
+                        if _status and _status != '在用':
+                            remark_parts.append(_status)
+                        if remark_parts:
+                            row['备注'] = ' | '.join(remark_parts)
                         
                         # 车辆Sheet特殊处理: 结算对象=车辆牌号/资产编号, 规格型号=车辆名称
                         if '车辆' in sheet_name:
                             row['结算对象'] = _asset_code if _asset_code else (_spec if _spec else _name)
                             row['规格型号'] = _name
+                        elif '房屋建筑物' in sheet_name:
+                            # 房建表必须按字段语义一次写入，禁止写后物理搬列。
+                            row.pop('结算对象', None)
+                            row['权证编号'] = _asset_code
+                            row['建筑物名称'] = _name
                         
                         _ar_data_rows.append(row)
                     
@@ -2201,6 +3019,14 @@ def phase2(project_dir, args):
                         print(f'  ❌ {sheet_name}: 重分配写入失败')
             load_result = load_subject_data(sheet_name, cache_dir)
             data_rows = load_result['data_rows']
+            # DT-FIX: FA sheet过滤备抵科目（1602累计折旧/1603减值准备等），避免贷方余额写为正数
+            if sheet_name in _fa_all_sheets and data_rows:
+                _contra_prefixes = ('1602', '1603', '1609', '1702', '1703')
+                _before = len(data_rows)
+                data_rows = [r for r in data_rows if not str(r.get('code', '')).startswith(_contra_prefixes)]
+                if len(data_rows) < _before:
+                    print(f'  🗑️ 过滤备抵科目: {_before - len(data_rows)}行')
+
             reconcile_target = load_result['reconcile_target']
             config = load_result['config']
 
@@ -2296,6 +3122,63 @@ def phase2(project_dir, args):
             else:
                 prepare_warnings = []
 
+            # DT-FIX: 用科目明细账结算对象数据替换prepare_data_rows的汇总行
+            _sl_data = _load_cache(cache_dir, 'subledger_standardized.json')
+            if _sl_data and data_rows and not sheet_name.startswith('4-8'):
+                _sl_rows = []
+                for _dr in data_rows:
+                    _subj_code = str(_dr.get('_subject_code', '') or '')
+                    _actual_code = str(_dr.get('code', '') or '')
+                    # DT-FIX: 标准化匹配——优先精确匹配，其次子科目→父科目前缀回退
+                    if _sl_data.get(_actual_code):
+                        _lookup_code = _actual_code
+                    elif len(_actual_code) >= 4 and _sl_data.get(_actual_code[:4]):
+                        _lookup_code = _actual_code[:4]
+                    elif _sl_data.get(_subj_code):
+                        _lookup_code = _subj_code
+                    elif len(_subj_code) >= 4 and _sl_data.get(_subj_code[:4]):
+                        _lookup_code = _subj_code[:4]
+                    else:
+                        _lookup_code = _actual_code or _subj_code
+                    # DT-FIX: 跳过现金/银行科目（1001/1002），它们的对方科目归集无意义
+                    if _lookup_code.startswith('100'):
+                        _sl_rows.append(_dr)
+                        continue
+                    _sl_subject = _sl_data.get(_lookup_code)
+                    # 获取当前adjusted余额（已包含重分类调整；prepare_data_rows后用账面价值字段）
+                    _dr_bal = abs(float(_dr.get('账面价值', _dr.get('book_value', _dr.get('balance', 0))) or 0))
+                    if _sl_subject and _sl_subject.get('settlements') and _dr_bal > 0:
+                        _stt = _sl_subject['settlements']
+                        # DT-FIX: 排除备抵科目结算对象（累计折旧/摊销/减值）
+                        _stt = {k: v for k, v in _stt.items() if not any(kw in k for kw in ['累计', '减值', '准备', '处置'])}
+                        if not _stt:
+                            _sl_rows.append(_dr)
+                            continue
+                        # 计算明细账结算对象净额合计
+                        _sl_total = abs(sum(s.get('debit', 0) - s.get('credit', 0) for s in _stt.values()))
+                        if _sl_total < 0.01:
+                            _sl_rows.append(_dr)
+                            continue
+                        # 按比例缩放：使明细账合计 = adjusted余额
+                        _ratio = _dr_bal / _sl_total
+                        _added = 0
+                        for _sn, _si in sorted(_stt.items(), key=lambda x: -x[1]['debit']):
+                            _dv = (_si.get('debit', 0) - _si.get('credit', 0)) * _ratio
+                            if abs(_dv) < 0.01: continue
+                            _added += 1
+                            _sl_rows.append({
+                                '项目及内容': _sn,
+                                '发生日期': _si.get('last_date', ''),
+                                '业务内容': '; '.join(_si.get('summaries', [])[:3]),
+                                '账面价值': round(_dv, 2),
+                                '评估价值': round(_dv, 2),
+                            })
+                        if _added:
+                            print(f'  📋 明细账替换: {_lookup_code}: {_added}个结算对象 (缩放比={_ratio:.4f})')
+                    else:
+                        _sl_rows.append(_dr)
+                if _sl_rows and len(_sl_rows) != len(data_rows):
+                    data_rows = _sl_rows
             # 将reconcile_target传入settings供DT-158即时勾稽使用
             settings['_reconcile_target'] = reconcile_target
 
@@ -2317,6 +3200,15 @@ def phase2(project_dir, args):
             if result['success']:
                 filled_sheets.append(sheet_name)
                 print(f'  ✅ {sheet_name}: {result["rows_written"]}行写入')
+                # r9: 写入后自检——验证写入合计 vs reconcile_target
+                if reconcile_target is not None and abs(reconcile_target) > 1:
+                    _wr_total = sum(float(r.get('账面价值', r.get('book_value', r.get('balance', 0)) or 0))
+                                    for r in data_rows if isinstance(r, dict))
+                    _wr_diff = abs(_wr_total - reconcile_target)
+                    if _wr_diff > 100:
+                        print(f'    ⚠️ 自检: 写入合计={_wr_total:,.2f}, 目标={reconcile_target:,.2f}, 差额={_wr_diff:,.2f}')
+                    else:
+                        print(f'    ✅ 自检: 写入合计={_wr_total:,.2f} 与目标一致')
             else:
                 failed_sheets.append(sheet_name)
                 print(f'  ❌ {sheet_name}: 写入失败')
@@ -2362,13 +3254,22 @@ def phase2(project_dir, args):
     # ── P7: 2-分类汇总 I列（报表金额）填充 ──
     _fill_classification_summary_I_column(wb, cache_dir)
 
+    # ── 结构合并修复：确保合计/减值行B:C合并稳定，避免G2-12误判/漏修复 ──
+    _merge_fixed = _repair_detail_sheet_bc_merges(wb)
+    if _merge_fixed:
+        print(f'  🔧 结构合并修复: {_merge_fixed}处')
+
     # 保存
+    _clear_formula_cache(wb)
     wb.save(xlsx_path)
     wb.close()
 
     # Gate G1验证
     print('\n[Gate G1] 数据写入级验证')
-    run_gate(project_dir, 'G1', args)
+    g1 = run_gate(project_dir, 'G1', args)
+    _gate_pass_or_raise(g1)
+    g182 = run_gate(project_dir, 'G-DT182', args)
+    _gate_pass_or_raise(g182)
 
     return {
         'phase': 2,
@@ -2386,11 +3287,11 @@ def phase2(project_dir, args):
 # ── _fill_classification_summary_I_column: 2-分类汇总 报表金额填充 ──
 
 def _fill_classification_summary_I_column(wb, cache_dir):
-    """P7: 向2-分类汇总的I列填入资产负债表报表金额，J列自动校验差异。
+    """向2-分类汇总写入I/J列公式，并构建标准化_BS对照结构表。
 
-    模板v1.90+新增:
-    - I列(C9) = 报表金额（从bs_balances.json提取）
-    - J列(C10) = 校验公式 =E-I（账面价值-报表金额）
+    规则：
+    - 具体科目行：I列链接_BS对照（VLOOKUP）；
+    - 合计/总计/净资产行：保留模板公式，不落静态值。
     """
     if '2-分类汇总' not in wb.sheetnames:
         return
@@ -2443,51 +3344,226 @@ def _fill_classification_summary_I_column(wb, cache_dir):
             return
         ws = wb['2-分类汇总']
 
-    # 建立 bs_balances label→ending_balance 映射
-    bs_items = bs_balances.get('items', [])
-    bs_map = {}
-    for item in bs_items:
-        label = str(item.get('label', '')).replace(' ', '').replace('　', '')
-        label = label.replace('：', '').replace(':', '').replace('　', '')
-        ending = item.get('ending_balance', 0) or 0
-        if label and ending:
-            bs_map[label] = ending
+    def _norm_label(text):
+        s = str(text or '').strip()
+        s = s.replace(' ', '').replace('\u3000', '').replace('\n', '')
+        s = s.replace('（', '(').replace('）', ')')
+        s = s.replace('：', '').replace(':', '')
+        return s
 
-    # 分类汇总科目名 → BS标签 别名映射（仅当名称不一致时使用）
+    def _strip_prefix(subject):
+        txt = str(subject or '').replace('\u3000', ' ').strip()
+        return re.sub(r'^[一二三四五六七八九十]+[、，,\.．]\s*', '', txt).strip()
+
+    def _is_summary_subject(subject):
+        norm_subj = _strip_prefix(subject).replace(' ', '')
+        if not norm_subj:
+            return False
+        if '合计' in norm_subj or '总计' in norm_subj:
+            return True
+        if '净资产' in norm_subj and '所有者权益' in norm_subj:
+            return True
+        return norm_subj in ('资产总计', '负债总计')
+
+    # 读取模板公式：用于恢复/保持合计行公式
+    template_i_formulas = {}
+    template_j_formulas = {}
+    try:
+        import openpyxl
+        template_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'assets', '评估明细表-v1.90-FOR AI.xlsx'
+        )
+        if os.path.exists(template_path):
+            twb = openpyxl.load_workbook(template_path, data_only=False)
+            if '2-分类汇总' in twb.sheetnames:
+                tws = twb['2-分类汇总']
+                for rr in range(1, tws.max_row + 1):
+                    iv = tws.cell(row=rr, column=9).value
+                    jv = tws.cell(row=rr, column=10).value
+                    if isinstance(iv, str) and iv.startswith('='):
+                        template_i_formulas[rr] = iv
+                    if isinstance(jv, str) and jv.startswith('='):
+                        template_j_formulas[rr] = jv
+            twb.close()
+    except Exception:
+        pass
+
+    # 分类汇总标准科目结构（按模板顺序）
+    subject_rows = []
+    for r in range(6, ws.max_row + 1):
+        display_name = ws.cell(row=r, column=4).value
+        if display_name is None:
+            continue
+        display_name = str(display_name).strip()
+        if not display_name:
+            continue
+        std_name = _strip_prefix(display_name)
+        if not std_name:
+            continue
+        subject_rows.append({
+            'row': r,
+            'display': display_name,
+            'std': std_name,
+            'is_summary': _is_summary_subject(display_name),
+        })
+
+    # 构建原始BS映射
+    bs_items = bs_balances.get('items', []) if isinstance(bs_balances, dict) else []
+    bs_item_map = {}
+    for item in bs_items:
+        label = str(item.get('label', '')).strip()
+        if not label:
+            continue
+        bs_item_map[_norm_label(label)] = {
+            'label': label,
+            'beginning': float(item.get('beginning_balance', 0) or 0),
+            'ending': float(item.get('ending_balance', 0) or 0),
+        }
+
+    aux_name = '_BS对照'
+    if aux_name in wb.sheetnames:
+        ws_aux = wb[aux_name]
+        ws_aux.delete_rows(1, ws_aux.max_row)
+    else:
+        ws_aux = wb.create_sheet(aux_name)
+    ws_aux.sheet_state = 'hidden'
+    # _BS对照改造：标准科目结构（完整列式）+来源追踪
+    ws_aux.cell(row=1, column=1).value = '标准科目'
+    ws_aux.cell(row=1, column=2).value = '科目类型'
+    ws_aux.cell(row=1, column=3).value = '年初余额'
+    ws_aux.cell(row=1, column=4).value = '期末余额'
+    ws_aux.cell(row=1, column=5).value = '来源科目'
+
     CATEGORY_TO_BS_ALIASES = {
-        '负债总计': '负债合计',
-        '净资产（所有者权益）': '所有者权益（或股东权益)合计',
+        '预付款项': ['预付账款'],
+        '预收款项': ['预收账款'],
+        '固定资产': ['固定资产账面价值', '固定资产净额'],
+        '负债总计': ['负债合计'],
+        '净资产（所有者权益）': ['所有者权益（或股东权益）合计', '所有者权益合计'],
     }
 
-    # 遍历2-分类汇总的每一行，精确匹配并填入I列
-    import re
-    filled_count = 0
-    for r in range(6, ws.max_row + 1):
-        c4 = str(ws.cell(row=r, column=4).value or '').strip()
-        if not c4:
+    def _pick_bs_item(std_subject):
+        candidates = [std_subject] + CATEGORY_TO_BS_ALIASES.get(std_subject, [])
+        # 1) 先做规范化精确匹配
+        for c in candidates:
+            hit = bs_item_map.get(_norm_label(c))
+            if hit:
+                return hit
+        # 2) 再做弱匹配（包含关系）
+        for c in candidates:
+            c_norm = _norm_label(c)
+            if not c_norm:
+                continue
+            for k, v in bs_item_map.items():
+                if c_norm in k or k in c_norm:
+                    return v
+        # 3) 净资产兜底：所有者权益合计口径
+        if '净资产' in std_subject and '所有者权益' in std_subject:
+            for k, v in bs_item_map.items():
+                if '所有者权益' in k and ('合计' in k or '总计' in k):
+                    return v
+        return None
+
+    def _find_report_net_asset_row():
+        """查找'报表净资产'标签所在行，找不到时回退68行。"""
+        for rr in range(60, min(ws.max_row + 1, 90)):
+            for cc in (7, 8, 9):
+                txt = str(ws.cell(row=rr, column=cc).value or '').strip()
+                if txt == '报表净资产':
+                    return rr
+        return 68
+
+    aux_row = 2
+    matched_in_aux = 0
+    unmatched_in_aux = 0
+    used_bs_norm_labels = set()
+    for item in subject_rows:
+        hit = _pick_bs_item(item['std'])
+        begin_val = hit['beginning'] if hit else 0.0
+        end_val = hit['ending'] if hit else 0.0
+        source_label = hit['label'] if hit else f'[未匹配]{item["std"]}'
+        if hit:
+            matched_in_aux += 1
+            used_bs_norm_labels.add(_norm_label(hit['label']))
+        else:
+            unmatched_in_aux += 1
+        ws_aux.cell(row=aux_row, column=1).value = item['std']
+        ws_aux.cell(row=aux_row, column=2).value = '汇总' if item['is_summary'] else '明细'
+        ws_aux.cell(row=aux_row, column=3).value = begin_val
+        ws_aux.cell(row=aux_row, column=4).value = end_val
+        ws_aux.cell(row=aux_row, column=5).value = source_label
+        aux_row += 1
+
+    # 追加“分类汇总未覆盖”的BS原始科目，避免未来新增科目静默遗漏
+    extra_bs_rows = 0
+    for raw in bs_items:
+        raw_label = str(raw.get('label', '')).strip()
+        if not raw_label:
             continue
-        c4_clean = c4.replace(' ', '').replace('　', '')
-        c4_clean = re.sub(r'^[一二三四五六七八九十]+[、，,]', '', c4_clean)
+        raw_norm = _norm_label(raw_label)
+        if not raw_norm or raw_norm in used_bs_norm_labels:
+            continue
+        ws_aux.cell(row=aux_row, column=1).value = f'[新增]{raw_label}'
+        ws_aux.cell(row=aux_row, column=2).value = '新增'
+        ws_aux.cell(row=aux_row, column=3).value = float(raw.get('beginning_balance', 0) or 0)
+        ws_aux.cell(row=aux_row, column=4).value = float(raw.get('ending_balance', 0) or 0)
+        ws_aux.cell(row=aux_row, column=5).value = raw_label
+        aux_row += 1
+        extra_bs_rows += 1
 
-        bs_val = bs_map.get(c4_clean)
-        if bs_val is None:
-            alias_key = CATEGORY_TO_BS_ALIASES.get(c4_clean)
-            if alias_key:
-                bs_val = bs_map.get(alias_key)
-        # I列全覆盖: 无BS匹配的科目填0
-        if bs_val is None:
-            bs_val = 0
+    # 分类汇总回填：
+    # - 具体科目：I列查_BS对照
+    # - 合计/总计：I列保留模板公式（不覆盖成静态值）
+    detail_linked = 0
+    summary_kept = 0
+    for item in subject_rows:
+        r = item['row']
+        if item['is_summary']:
+            i_formula = template_i_formulas.get(r)
+            j_formula = template_j_formulas.get(r)
+            if isinstance(i_formula, str) and i_formula.startswith('='):
+                ws.cell(row=r, column=9).value = i_formula
+            elif not (isinstance(ws.cell(row=r, column=9).value, str) and str(ws.cell(row=r, column=9).value).startswith('=')):
+                ws.cell(row=r, column=9).value = f'=IFERROR(VLOOKUP("{item["std"]}",\'{aux_name}\'!$A:$D,4,FALSE),0)'
+            if isinstance(j_formula, str) and j_formula.startswith('='):
+                ws.cell(row=r, column=10).value = j_formula
+            else:
+                ws.cell(row=r, column=10).value = f'=E{r}-I{r}'
+            summary_kept += 1
+            continue
 
-        ws.cell(row=r, column=9).value = bs_val
-        # DT-212: J列写入校验公式 =E{r}-I{r}
+        # DT-182: 汇总表I列必须保留公式引用；BS值在_BS对照 Col4, VLOOKUP读取
+        ws.cell(row=r, column=9).value = f'=IFERROR(VLOOKUP(D{r},\'{aux_name}\'!$A:$D,4,FALSE),0)'
         ws.cell(row=r, column=10).value = f'=E{r}-I{r}'
-        if bs_val != 0:
-            filled_count += 1
+        detail_linked += 1
 
-    if filled_count > 0:
-        print(f'  [P7] 2-分类汇总 I列（报表金额）已填充: {filled_count}行（含{sum(1 for r2 in range(6, ws.max_row+1) if ws.cell(row=r2, column=9).value is not None)}行填0）')
+    # I68（报表净资产）自动写入：用于I列数据校验增强
+    report_net_asset = None
+    hit_net_asset = _pick_bs_item('净资产（所有者权益）')
+    if hit_net_asset:
+        report_net_asset = float(hit_net_asset.get('ending', 0) or 0)
     else:
-        print(f'  [P7] 2-分类汇总 I列（报表金额）: 未匹配到任何数据')
+        # 兜底：从BS原始科目中找“所有者权益+合计/总计”口径
+        for k, v in bs_item_map.items():
+            if '所有者权益' in k and ('合计' in k or '总计' in k):
+                report_net_asset = float(v.get('ending', 0) or 0)
+                break
+
+    report_row = _find_report_net_asset_row()
+    i68_filled = False
+    if report_net_asset is not None:
+        # DT-182: 写入公式引用而非硬编码值
+        ws.cell(row=report_row, column=9).value = f'=IFERROR(VLOOKUP("净资产（所有者权益）",\'{aux_name}\'!$A:$D,4,FALSE),0)'
+        i68_filled = True
+    if not i68_filled:
+        ws.cell(row=report_row, column=9).value = f'=IFERROR(VLOOKUP("*",\'{aux_name}\'!$A:$D,4,FALSE),0)'
+
+    print(
+        f'  [P7] 已重构_BS对照(标准科目{len(subject_rows)}行, 匹配{matched_in_aux}行, 未匹配{unmatched_in_aux}行, 新增科目{extra_bs_rows}行); '
+        f'I列科目链接{detail_linked}行, 合计公式保留{summary_kept}行, '
+        f'I{report_row}报表净资产{"已写入" if i68_filled else "未写入"}'
+    )
 
 
 
@@ -2506,11 +3582,12 @@ class _StandardizedJournalWrapper:
                 格式: {date, voucher_no, subject_code, subject_name, 
                        summary, debit_amount, credit_amount}
         """
+        from datetime import datetime, timedelta
         import re as _re
         self.data = []
         for row in journal_data:
             # 标准化日期格式
-            date_str = row.get('date', '')
+            raw_date = row.get('date', '')
             subject_code = str(row.get('subject_code', '')).strip()
             subject_name = str(row.get('subject_name', '')).strip()
             summary = str(row.get('summary', '')).strip()
@@ -2525,15 +3602,35 @@ class _StandardizedJournalWrapper:
                 credit = 0.0
             
             # 标准化date为datetime对象（兼容JournalExtractor）
+            # 兼容: datetime / Excel序列号(float,int) / YYYY-MM-DD文本
             parsed_date = None
-            if date_str:
-                for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d']:
-                    try:
-                        from datetime import datetime
-                        parsed_date = datetime.strptime(date_str[:10], fmt)
-                        break
-                    except ValueError:
-                        continue
+            date_str = ''
+            if isinstance(raw_date, datetime):
+                parsed_date = raw_date
+                date_str = raw_date.strftime('%Y-%m-%d')
+            elif isinstance(raw_date, (int, float)):
+                try:
+                    parsed_date = datetime(1899, 12, 30) + timedelta(days=float(raw_date))
+                    date_str = parsed_date.strftime('%Y-%m-%d')
+                except Exception:
+                    parsed_date = None
+                    date_str = str(raw_date)
+            elif raw_date is not None:
+                date_str = str(raw_date).strip()
+                if date_str:
+                    for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d', '%Y年%m月%d日']:
+                        try:
+                            parsed_date = datetime.strptime(date_str[:10], fmt)
+                            break
+                        except ValueError:
+                            continue
+                    # 兜底：字符串是数字序列号
+                    if parsed_date is None:
+                        try:
+                            serial = float(date_str)
+                            parsed_date = datetime(1899, 12, 30) + timedelta(days=serial)
+                        except Exception:
+                            parsed_date = None
             
             self.data.append({
                 'date': parsed_date,
@@ -2558,9 +3655,7 @@ class _StandardizedJournalWrapper:
         filtered = []
         for s in self.data:
             for kw in subject_keywords:
-                # DT-FIX: 用subject_code前缀匹配，而非subject_name模糊搜索
-                # 旧逻辑 kw in s['subject_name'] 会误匹配含数字的科目名称
-                if kw and s['subject_code'].startswith(kw):
+                if kw and kw in s['subject_name']:
                     filtered.append(s)
                     break
         
@@ -2576,7 +3671,8 @@ class _StandardizedJournalWrapper:
         if not filtered and fuzzy_fallback and subject_keywords:
             for s in self.data:
                 for kw in subject_keywords:
-                    if kw and s['subject_code'].startswith(kw):
+                    if kw and (s['subject_code'].startswith(kw) or
+                               s['subject_name'].startswith(kw)):
                         filtered.append(s)
                         break
         
@@ -2609,8 +3705,7 @@ class _StandardizedJournalWrapper:
         if not name:
             return name
         import re as _re
-        name = _re.sub(r'^[*＊]+\s*', '', name.strip())
-        return _re.sub(r'^\[[^\]]*\]\s*', '', name)
+        return _re.sub(r'^[*＊]+\s*', '', name.strip())
     
     def get_last_date_by_settlement(self, settlement_name, subject_code_prefix,
                                     summary_keywords=None, direction=None):
@@ -2716,7 +3811,6 @@ def _clean_settlement_names_in_detail(xlsx_path):
             val = ws.cell(row=r, column=col).value
             if val and isinstance(val, str):
                 cleaned_val = _re.sub(r'^[*＊]+\s*', '', val.strip())
-                cleaned_val = _re.sub(r'^\[[^\]]*\]\s*', '', cleaned_val)
                 if cleaned_val != val.strip():
                     ws.cell(row=r, column=col).value = cleaned_val
                     cleaned += 1
@@ -2724,6 +3818,7 @@ def _clean_settlement_names_in_detail(xlsx_path):
     if cleaned > 0:
         print(f'  [清理] 已去除 {cleaned} 个结算对象名称的 * 前缀')
     
+    _clear_formula_cache(wb)
     wb.save(xlsx_path)
     wb.close()
 
@@ -2846,6 +3941,16 @@ def phase3(project_dir, args):
     # --- Step 3.6: 写入评估明细表 ---
     print('\n[Step 3.6] 写入评估明细表')
     write_phase3_results(xlsx_path, date_results, biz_results)
+    try:
+        import openpyxl
+        _wb3 = openpyxl.load_workbook(xlsx_path)
+        _mfix = _repair_detail_sheet_bc_merges(_wb3)
+        if _mfix:
+            print(f'  🔧 结构合并修复(Phase3): {_mfix}处')
+        _wb3.save(xlsx_path)
+        _wb3.close()
+    except Exception as _e3:
+        print(f'  ⚠️ 结构合并修复失败: {_e3}')
 
     # --- Step 3.7: 生成报告+缓存 ---
     report = generate_phase3_report(date_results, biz_results)
@@ -2862,7 +3967,8 @@ def phase3(project_dir, args):
 
     # --- Step 3.8: Gate G2验证 ---
     print('\n[Gate G2] 字段完整性验证')
-    run_gate(project_dir, 'G2', args)
+    g2 = run_gate(project_dir, 'G2', args)
+    _gate_pass_or_raise(g2)
 
     return {
         'phase': 3,
@@ -2928,7 +4034,8 @@ def phase4(project_dir, args):
 
     # --- Step 4.4: Gate G1格式门控 ---
     print('\n[Gate G1F] 格式门控')
-    run_gate(project_dir, 'G1', args)
+    g1f = run_gate(project_dir, 'G1F', args)
+    _gate_pass_or_raise(g1f)
 
     return {
         'phase': 4,
@@ -3016,6 +4123,8 @@ def phase5(project_dir, args):
                 _ws_fix.sheet_state = 'visible'
                 _unhidden += 1
                 print(f'  🔄 恢复显示(有实际数据): {_sn_fix}')
+        _repair_detail_sheet_bc_merges(_wb_fix)
+        _clear_formula_cache(_wb_fix)
         _wb_fix.save(xlsx_path)
         _wb_fix.close()
         if _unhidden > 0:
@@ -3025,7 +4134,8 @@ def phase5(project_dir, args):
 
     # --- Step 5.4: Gate G3勾稽级验证 ---
     print('\n[Gate G3] 勾稽级验证')
-    run_gate(project_dir, 'G3', args)
+    g3 = run_gate(project_dir, 'G3', args)
+    _gate_pass_or_raise(g3)
 
     # --- Step 5.5: P1自检（DT-160强制审计） ---
     print('\n[Step 5.5] P1自检 - DT-160强制审计')
@@ -3050,6 +4160,8 @@ def phase5(project_dir, args):
         import openpyxl as _op5
         _wb5 = _op5.load_workbook(xlsx_path)
         _write_settings_sheet(_wb5, settings)
+        _repair_detail_sheet_bc_merges(_wb5)
+        _clear_formula_cache(_wb5)
         _wb5.save(xlsx_path)
         _wb5.close()
 
@@ -3144,15 +4256,18 @@ def phase5(project_dir, args):
     if reconciliation_results:
         print(f'\n  勾稽汇总: 通过={reconciliation_results.get("pass_count", 0)}, 差异={reconciliation_results.get("fail_count", 0)}')
 
+    external_pass = bool(reconciliation_results.get('external_pass', False))
+    phase5_status = 'completed' if external_pass else 'draft_review_required'
+    ensure_formula_cache_status(cache_dir)
     _save_cache(cache_dir, 'phase5_status.json', {
-        'status': 'completed',
+        'status': phase5_status,
         'hidden_sheets': hidden_count,
         'reconciliation': reconciliation_results,
     })
 
     return {
         'phase': 5,
-        'status': 'completed',
+        'status': phase5_status,
         'hidden_sheets': hidden_count,
         'reconciliation_pass': reconciliation_results.get('pass_count', 0),
         'reconciliation_fail': reconciliation_results.get('fail_count', 0),
@@ -3778,6 +4893,7 @@ def _run_reconciliation(xlsx_path, cache_dir):
 
     # 保存勾稽报告到缓存
     reconciliation_report = {
+        'external_pass': fail_count == 0 and not failures,
         'pass_count': pass_count,
         'fail_count': fail_count,
         'failures': failures,
@@ -3798,7 +4914,7 @@ def _run_reconciliation(xlsx_path, cache_dir):
         for f in failures:
             print(f'    - {f["sheet"]}: 明细表={f["detail_bv"]:,.2f} vs 目标={f["subject_total"]:,.2f} 差异={f["diff"]:,.2f}({f["diff_rate"]:.2f}%)')
 
-    return {'pass_count': pass_count, 'fail_count': fail_count, 'failures': failures}
+    return reconciliation_report
 
 
 def _inline_hide_empty_sheets(xlsx_path):
@@ -3884,26 +5000,8 @@ def _inline_hide_empty_sheets(xlsx_path):
                         _fwc = _hide_wb[_child_sn]
                         _fbv = _fwc.cell(row=_t1r, column=_bv_col).value
                         if _fbv and isinstance(_fbv, str) and _fbv.startswith('='):
-                            # DT-209 FIX: 子表合计行有SUM公式不代表有实质数据，
-                            # 必须检查数据行（6~合计行前）是否有实际数值
-                            _actual_data_found = False
-                            for _dr in range(6, _t1r):
-                                for _dc in range(1, min(_ws_child.max_column + 1, 12)):
-                                    _dv = _ws_child.cell(row=_dr, column=_dc).value
-                                    if _dv is not None and _dv != '':
-                                        if isinstance(_dv, (int, float)) and abs(_dv) > 0.01:
-                                            _actual_data_found = True
-                                            break
-                                        elif isinstance(_dv, str) and _dv.strip() and not _dv.startswith('='):
-                                            _dvs = str(_dv).replace(' ', '').replace('　', '')
-                                            if not any(kw in _dvs for kw in ['检索表头', '序号', '合计', '表头', '检索', '名称', '规格', '单位', '来源', '结构', '建成', '面积', '权证', '成本', '土地', '宗地', '用地', '用途', '准用', '开发']):
-                                                _actual_data_found = True
-                                                break
-                                if _actual_data_found:
-                                    break
-                            if _actual_data_found:
-                                _has_content = True
-                                break
+                            _has_content = True
+                            break
                     elif _bv is not None and _bv != '':
                         if isinstance(_bv, (int, float)) and abs(_bv) >= 0.01:
                             _has_content = True
@@ -4002,6 +5100,7 @@ def _inline_hide_empty_sheets(xlsx_path):
                     hidden_count += 1
                     print(f'  隐藏: {sn} (公式合计但数据为空)')
 
+    _clear_formula_cache(wb)
     wb.save(xlsx_path)
     wb.close()
     print(f'  内联隐藏完成: {hidden_count}个Sheet')
@@ -4030,22 +5129,29 @@ def _run_all_phases(project_dir, args):
             results[p] = result
             print(f'\n✅ Phase {p} 完成')
 
-            # DT-200: 报错恢复协议——Phase失败时输出修复指引
-            if result.get('status') in ('error', 'skipped_no_seq_file'):
-                print(f'\n⚠️ Phase {p} 状态: {result.get("status")}')
+            phase_status = result.get('status')
+            if phase_status == 'blocked_confirmation':
+                _build_project_state(project_dir, 'BLOCKED_CONFIRMATION', _cache_path(project_dir))
+                print(f'\n⏸️ Phase {p} 进入待确认状态，流程暂停')
+                return results
+            if phase_status in ('error', 'partial', 'failed'):
+                _build_project_state(project_dir, 'FAILED', _cache_path(project_dir))
+                raise RuntimeError(f'Phase {p} 状态不允许继续: {phase_status}')
+            if phase_status == 'skipped_no_seq_file':
+                print(f'\n⚠️ Phase {p} 状态: {phase_status}')
                 if result.get('reason'):
                     print(f'  原因: {result["reason"]}')
-                # 不再是requires_manual_execution，而是明确的completed/skipped/error
-                # skipped_no_seq_file 是DT-161允许的跳过，继续下一Phase
 
         except SystemExit as e:
             if e.code != 0:
                 print(f'\n🚨 Phase {p} Gate不通过，流程阻断！')
                 print(f'请修复问题后重新运行: --phase {p}')
+                _build_project_state(project_dir, 'FAILED', _cache_path(project_dir))
                 sys.exit(1)
         except Exception as e:
             print(f'\n🚨 Phase {p} 执行异常: {e}')
             traceback.print_exc()
+            _build_project_state(project_dir, 'FAILED', _cache_path(project_dir))
             sys.exit(1)
 
     print(f'\n{"="*60}')
@@ -4075,6 +5181,8 @@ def _run_all_phases(project_dir, args):
                 print(f'\n{"="*60}')
                 print('🎉 全流程执行完成！')
                 print(f'{"="*60}')
+                _release_st = _finalize_release_status(project_dir, cache_dir, _prev)
+                print(f'  最终状态: {_release_st["status"]}')
                 return results
             start_round = _prev.get('round', 0) + 1
             print(f'  从验收 R{_prev.get("round", 0)+1} 续传')
@@ -4090,11 +5198,16 @@ def _run_all_phases(project_dir, args):
         save_report(qa_result, cache_dir)
         
         if qa_result['passed']:
+            _release_st = _finalize_release_status(project_dir, cache_dir, qa_result)
+            _r_status = _release_st['status']
+            _r_detail = json.dumps(_release_st['detail'], ensure_ascii=False)
+            print(f'  最终状态: {_r_status}')
+            print(f'  发布详情: {_r_detail}')
             break
         
         if qa_round < max_rounds - 1:
             print(f'\n  🔄 第{qa_round+1}轮发现{len(qa_result.get("failed_items", []))}项问题')
-            print(f'  自动修复中...')
+            print(f'  按已注册安全路径处理...')
             
             checks = qa_result.get('checks', {})
             
@@ -4138,10 +5251,15 @@ def _run_all_phases(project_dir, args):
             for item in qa_result.get('failed_items', []):
                 print(f'    - {item}')
             print(f'  QA报告: {qa_report_path}')
-    
+            _build_project_state(project_dir, 'FAILED', cache_dir, pending_count=0)
+            sys.exit(1)
+
     print(f'\n{"="*60}')
     print('🎉 全流程执行完成！')
     print(f'{"="*60}')
+    if not (_load_cache(cache_dir, 'qa_report.json') or {}).get('passed', False):
+        _build_project_state(project_dir, 'FAILED', cache_dir, pending_count=0)
+        sys.exit(1)
     return results
 
 
@@ -4158,7 +5276,7 @@ def main():
     parser.add_argument('--xlsx-path', type=str, default=None,
                        help='评估明细表路径（Phase 2+需要）')
     parser.add_argument('--gate', type=str, default=None,
-                       help='Gate验证: G0, G1, G2, G3, all')
+                       help='Gate验证: G0, G1, G1F, G2, G3, G-DT182, all')
     parser.add_argument('--force', action='store_true',
                        help='强制重新执行（忽略缓存）')
 
@@ -4204,12 +5322,19 @@ def main():
             print('❌ --gate 需要指定G0/G1/G2/G3/all')
             sys.exit(1)
         if args.gate == 'all':
-            for g in ['G0', 'G1', 'G2', 'G3']:
-                run_gate(project_dir, g, args)
+            for g in ['G0', 'G1', 'G2', 'G3', 'G-DT182']:
+                r = run_gate(project_dir, g, args)
+                _gate_pass_or_raise(r)
         else:
-            run_gate(project_dir, args.gate, args)
+            r = run_gate(project_dir, args.gate, args)
+            _gate_pass_or_raise(r)
     elif args.phase in phase_map:
         result = phase_map[args.phase](project_dir, args)
+        status = result.get('status', 'unknown')
+        if status not in ('completed', 'skipped_no_seq_file'):
+            print(f'\n❌ Phase {args.phase} 未通过: {status}')
+            print(f'结果: {json.dumps(result, ensure_ascii=False, indent=2)}')
+            sys.exit(1)
         print(f'\n✅ Phase {args.phase} 执行完成')
         print(f'结果: {json.dumps(result, ensure_ascii=False, indent=2)}')
     elif args.phase == 'all':

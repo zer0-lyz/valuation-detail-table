@@ -194,12 +194,12 @@ def run_gate_validator(filepath, sheet_name, gate='G1'):
         SystemExit: 门控未通过
     """
     gate_script = os.path.expanduser(
-        '~/.workbuddy/skills/valuation-detail-table/scripts/gate_validator.py'
+        '~/.codex/skills/valuation-detail-table/valuation-detail-table/scripts/gate_validator.py'
     )
     # 尝试valuation-common路径
     if not os.path.exists(gate_script):
         gate_script = os.path.expanduser(
-            '~/.workbuddy/skills/valuation-common/scripts/gate_validator.py'
+            '~/.codex/skills/valuation-detail-table/valuation-common/scripts/gate_validator.py'
         )
     
     if os.path.exists(gate_script):

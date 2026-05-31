@@ -140,7 +140,7 @@ Skill被触发
 
 > **🚨 G0强制门控（v3.48新增）**：Phase 0完成后、进入Phase 1前，MUST执行以下命令验证数据源完整性：
 > ```bash
-> python scripts/gate_validator.py <xlsx_path> --gate G0 --sb-path <科目余额表路径> --bs-path <资产负债表路径>
+> python3 valuation-detail-table/scripts/gate_validator.py <xlsx_path> --gate G0 --sb-path <科目余额表路径> --bs-path <资产负债表路径>
 > ```
 > **CRITICAL>0 → 禁止进入Phase 1，必须回退修复数据源问题。** 此门控为L2层级约束，Agent不可绕过。
 
@@ -262,12 +262,12 @@ gate_result = auto_gate_after_fill(filepath, sheet_id, result)
 **v3.17 gate_validator.py增强**：
 ```bash
 # G2科目级校验（Phase 2完成后，需bs-path和sb-path参数）
-python scripts/gate_validator.py <xlsx_path> --gate G2 --bs-path <bs_path> --sb-path <sb_path>
+python3 valuation-detail-table/scripts/gate_validator.py <xlsx_path> --gate G2 --bs-path <bs_path> --sb-path <sb_path>
 # G2新增：DT-87其他流动资产行数门控/DT-89递延所得税零余额排除/DT-103数据源完整性
 # G2新增[DT-120]：G2-12 smart_insert_row工具调用检测（4项格式特征，CRITICAL=禁止进入Phase 3）
 
 # G3勾稽级校验（Phase 4完成后）
-python scripts/gate_validator.py <xlsx_path> --gate G3 --bs-path <bs_path>
+python3 valuation-detail-table/scripts/gate_validator.py <xlsx_path> --gate G3 --bs-path <bs_path>
 # G3新增：DT-18减值准备行评估值方向/DT-86汇总表跨sheet引用行号校验
 ```
 
@@ -290,10 +290,10 @@ python scripts/gate_validator.py <xlsx_path> --gate G3 --bs-path <bs_path>
 **核心逻辑**：
 1. 从 `_dt_cache/bs_balances.json` 加载 BS 各科目期末余额
 2. 遍历 `2-分类汇总` 每一行，根据科目名称匹配 BS 数据
-3. I 列写入 BS 期末余额，J 列写入公式 `=I - E`（E=账面价值）（自动计算差异）
+3. 将BS期末余额写入隐藏`_BS对照`结构表；I列写入链接`_BS对照`的公式，J列写入差异公式（自动计算差异）
 4. 差异 > 1 元的科目输出差异清单，供 Phase 4 勾稽核对使用
 
-- [ ] **CCEP-1**：BS数据已写入2-分类汇总表I列
+- [ ] **CCEP-1**：BS数据已写入隐藏`_BS对照`，2-分类汇总I列公式链接完整
 - [ ] **CCEP-2**：J列差异公式已写入，COM重算后差异值正确
 - [ ] **CCEP-3**：差异清单已输出
 

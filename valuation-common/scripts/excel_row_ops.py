@@ -624,8 +624,9 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
         header_rows = []
     
     merges_to_remove = []
-    merges_to_rebuild = []  # 需要重建的合计行B:C合并
+    merges_to_rebuild = []  # 需要重建的合计行B起始合并（B:C/B:D/B:E）
     merges_fixed = []  # 返回修复记录
+    struct_merge_end_hint = 3
     
     for mr in ws.merged_cells.ranges:
         # 跳过表头合并
@@ -644,15 +645,17 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
                 or ('小' in text and '计' in text)
             )
         
-        # DT-163: 检测openpyxl insert_rows导致的跨行B:C合并扩展
-        # 特征：B:C合并跨多行(mr.min_row != mr.max_row)，且min_row在数据行区域
-        # 根因：insert_rows在合计行位置插入时，openpyxl将B:C合并范围扩展而非下推
-        if mr.min_col == 2 and mr.max_col == 3 and mr.max_row > mr.min_row:
-            # 跨行B:C合并——一定是错误的，数据行不应有跨行B:C合并
+        if is_struct_row and mr.min_col == 2 and mr.max_col >= 3 and mr.max_row == mr.min_row:
+            struct_merge_end_hint = max(struct_merge_end_hint, mr.max_col)
+
+        # DT-163扩展：检测openpyxl insert_rows导致的跨行B起始合并扩展(B:C/B:D/B:E)
+        # 特征：B起始合并跨多行，且min_row在数据行区域
+        if mr.min_col == 2 and mr.max_col >= 3 and mr.max_row > mr.min_row:
+            # 跨行结构合并——一定是错误的，数据行不应有此类合并
             merges_to_remove.append(str(mr))
             if old_total_row and mr.min_row <= old_total_row and new_total_row:
                 # 原合计行的合并被扩展了，需要在新位置重建
-                merges_to_rebuild.append((new_total_row, mr.min_col, mr.max_col))
+                merges_to_rebuild.append((new_total_row, mr.min_col, max(3, mr.max_col)))
             continue
         
         if is_struct_row:
@@ -663,23 +666,22 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
         # A:C合并（min_col=1, max_col>=3）
         if mr.min_col == 1 and mr.max_col >= 3:
             merges_to_remove.append(str(mr))
-        # B:C合并（min_col=2, max_col=3）— 教训19: 数据行不应有B:C合并
-        elif mr.min_col == 2 and mr.max_col == 3:
-            # 检查是否为"原合计行B:C合并未下推"的情况
-            # 特征：合并位于old_total_row附近，且该行已不是合计行
+        # B起始结构合并（min_col=2, max_col>=3）— 数据行不应保留
+        elif mr.min_col == 2 and mr.max_col >= 3:
+            # 检查是否为"原合计行结构合并未下推"的情况
             if old_total_row and mr.min_row == old_total_row and new_total_row and new_total_row != old_total_row:
-                # 这是openpyxl未正确下推的B:C合并，需要取消并在新位置重建
+                # 这是openpyxl未正确下推的结构合并，需要取消并在新位置重建
                 merges_to_remove.append(str(mr))
-                merges_to_rebuild.append((new_total_row, mr.min_col, mr.max_col))
+                merges_to_rebuild.append((new_total_row, mr.min_col, max(3, mr.max_col)))
             else:
-                # 普通数据行的B:C合并，直接取消
+                # 普通数据行的结构合并，直接取消
                 merges_to_remove.append(str(mr))
     
     for merge_str in merges_to_remove:
         ws.unmerge_cells(merge_str)
         merges_fixed.append(f'unmerged:{merge_str}')
     
-    # 重建合计行的B:C合并（教训20）
+    # 重建合计行的B起始结构合并（教训20）
     for row, min_col, max_col in merges_to_rebuild:
         merge_range = f"{get_column_letter(min_col)}{row}:{get_column_letter(max_col)}{row}"
         # 先检查是否已存在该合并
@@ -688,7 +690,7 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
             ws.merge_cells(merge_range)
             merges_fixed.append(f'remerged:{merge_range}')
     
-    # DT-163: 强制校验所有结构行的B:C合并存在（合计1+减值+合计2）
+    # DT-163: 强制校验所有结构行的B起始合并存在（合计1+减值+合计2）
     # 无论openpyxl insert_rows如何处理合并范围，结构行必须有B:C合并
     # v1.4升级：从只修复合计1行 → 修复全部结构行（3-7预付款项复盘结论）
     STRUCT_MARKERS = {'合计1', '合计2', '坏账准备', '预计风险', '预计损失', '计提跌价准备', '减值准备', '跌价准备'}
@@ -719,9 +721,11 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
     
     for r in rows_to_check:
         merge_found = False
+        row_end_col = None
         for mr in ws.merged_cells.ranges:
-            if mr.min_row == r and mr.min_col == 2 and mr.max_col == 3 and mr.max_row == r:
+            if mr.min_row == r and mr.min_col == 2 and mr.max_col >= 3 and mr.max_row == r:
                 merge_found = True
+                row_end_col = mr.max_col
                 break
         
         if not merge_found:
@@ -737,13 +741,17 @@ def _fix_merged_cells_after_insert(ws, inserted_row, count=1, header_rows=None,
                 is_struct = '合' in text and '计' in text
             
             if is_struct:
-                # 先取消可能冲突的合并（跨行B:C等）
+                target_end_col = row_end_col or struct_merge_end_hint
+                if target_end_col < 3:
+                    target_end_col = 3
+
+                # 先取消可能冲突的合并（跨行/错位结构合并）
                 for mr in list(ws.merged_cells.ranges):
-                    if mr.min_row == r and mr.min_col == 2 and mr.max_col == 3 and mr.max_row > r:
+                    if mr.min_row <= r <= mr.max_row and not (mr.max_col < 2 or mr.min_col > target_end_col):
                         ws.unmerge_cells(str(mr))
                         merges_fixed.append(f'unmerged_cross_row:{mr}')
                 
-                merge_range = f"B{r}:C{r}"
+                merge_range = f"B{r}:{get_column_letter(target_end_col)}{r}"
                 try:
                     ws.merge_cells(merge_range)
                     merges_fixed.append(f'DT-163_rebuild:{merge_range}')

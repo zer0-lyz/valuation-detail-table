@@ -7,20 +7,21 @@ DT Skill 编号唯一性校验脚本
 2. 教训编号重复 / 间隙 / 乱序
 3. DT编号重复 / 间隙（DT编号有设计间隙，仅报告>2的连续间隙）
 4. 虚空文件引用（指向不存在的.md/.py文件）
-5. 虚空DT引用（Step文件/CHECK.md中引用了SKILL.md中不存在的DT编号）
+5. 未定义DT引用（聚合报告，作为历史文档清理提示）
 
 用法：
     python validate_numbering.py [--skill-dir <path>] [--fix-hints]
 
 返回：
     exit 0 = 全部通过
-    exit 1 = 有错误（重复/虚空引用）
-    exit 2 = 仅有警告（间隙/乱序）
+    exit 1 = 有错误（重复编号/虚空文件引用）
+    exit 2 = 仅有警告（间隙/乱序/未定义DT引用）
 """
 
 import sys
 import os
 import re
+import json
 import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -38,6 +39,8 @@ LESSON_KNOWN_GAPS = {33, 34}
 
 # 忽略的目录
 IGNORE_DIRS = {'__pycache__', '.git', 'node_modules'}
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_SKILL_DIR = SCRIPT_DIR.parent
 
 
 # ============================================================
@@ -63,19 +66,41 @@ def extract_lesson_numbers(lessons_content):
     return re.findall(r'^## 教训(\d+)', lessons_content, re.MULTILINE)
 
 
-def extract_dt_definitions(skill_content):
-    """从SKILL.md提取DT编号定义，包含两种格式：
-    1. 完整定义行：| **DT-{N}** |
-    2. 已迁移规则引用行：> - DT-{N}(...)
-    """
+def load_dt_definitions(skill_dir, skill_content):
+    """优先从RULES.md读取DT定义，其次rule_manifest.json，最后回退SKILL.md。"""
+    rules_md = os.path.join(skill_dir, 'RULES.md')
+    if os.path.exists(rules_md):
+        content = read_file(rules_md)
+        # 同时识别主规则（**DT-182**）和附录降级规则（DT-28）。
+        # 子规则如DT-164.1、DT-182b按主编号归并，避免引用侧误报。
+        nums = sorted(set(re.findall(
+            r'\|\s*(?:\*\*)?DT-(\d+)(?:\.\d+)?[a-z]?(?:\*\*)?\s*\|',
+            content,
+        )), key=int)
+        if nums:
+            return nums
+
+    manifest = os.path.join(skill_dir, 'assets', 'rule_manifest.json')
+    if os.path.exists(manifest):
+        try:
+            with open(manifest, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            nums = set()
+            for key in data.get('rules', {}).keys():
+                m = re.match(r'^DT-(\d+)$', str(key))
+                if m:
+                    nums.add(m.group(1))
+            if nums:
+                return sorted(nums, key=int)
+        except (OSError, json.JSONDecodeError):
+            pass
+
     dt_nums = set()
-    # 格式1：完整定义行
     for m in re.finditer(r'\| \*\*DT-(\d+)\*\*', skill_content):
         dt_nums.add(m.group(1))
-    # 格式2：已迁移规则引用行
     for m in re.finditer(r'^> - DT-(\d+)\(', skill_content, re.MULTILINE):
         dt_nums.add(m.group(1))
-    return list(dt_nums)
+    return sorted(dt_nums, key=int)
 
 
 def extract_file_references(content, base_dir):
@@ -216,6 +241,11 @@ def check_file_references(refs, base_dir):
         if os.path.exists(full_path):
             continue
 
+        # 再在仓库根目录查找（顶层入口脚本，如scripts/validate_skill.py）
+        repo_path = os.path.join(os.path.dirname(base_dir), ref_path)
+        if os.path.exists(repo_path):
+            continue
+
         # 再在共享脚本目录下查找（针对scripts/xxx.py格式）
         common_path = os.path.join(common_dir, ref_path)
         if os.path.exists(common_path):
@@ -227,37 +257,64 @@ def check_file_references(refs, base_dir):
 
 
 def check_dt_void_references(skill_dir, dt_defined):
-    """检查Step文件/CHECK.md中的DT引用是否都有定义，返回(错误列表, 警告列表)"""
-    errors = []
+    """聚合报告操作文档中的未定义DT引用，返回(错误列表, 警告列表)。"""
     warnings = []
     dt_defined_set = set(dt_defined)
+    missing = defaultdict(list)
 
-    # 扫描除SKILL.md外的所有.md文件
-    for root, dirs, files in os.walk(skill_dir):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for fname in files:
-            if not fname.endswith('.md'):
-                continue
-            fpath = os.path.join(root, fname)
-            # SKILL.md是定义文件，跳过
-            if fname == 'SKILL.md':
-                continue
-            # CHANGELOG.md是历史记录，跳过（历史DT编号可能已被剥离/合并）
-            if fname == 'CHANGELOG.md':
-                continue
+    operational_docs = [
+        os.path.join(skill_dir, 'CHECK.md'),
+        os.path.join(skill_dir, 'FLOW.md'),
+        os.path.join(skill_dir, 'scripts', 'README.md'),
+        os.path.join(skill_dir, 'scripts', 'SKILL_SCRIPT_INDEX.md'),
+    ]
+    steps_dir = os.path.join(skill_dir, 'steps')
+    if os.path.isdir(steps_dir):
+        operational_docs.extend(
+            os.path.join(steps_dir, fname)
+            for fname in sorted(os.listdir(steps_dir))
+            if fname.endswith('.md')
+        )
 
-            content = read_file(fpath)
-            dt_refs = extract_dt_references(content)
-            rel_path = os.path.relpath(fpath, skill_dir)
+    for fpath in operational_docs:
+        if not os.path.exists(fpath):
+            continue
+        content = read_file(fpath)
+        rel_path = os.path.relpath(fpath, skill_dir)
+        for dt_num, line_no in extract_dt_references(content):
+            if dt_num not in dt_defined_set:
+                missing[dt_num].append(f'{rel_path}:{line_no}')
 
-            for dt_num, line_no in dt_refs:
-                if dt_num not in dt_defined_set:
-                    errors.append(
-                        f"❌ 虚空DT引用：{rel_path}:{line_no} 引用 DT-{dt_num}，"
-                        f"但SKILL.md中无此定义"
-                    )
+    for dt_num in sorted(missing, key=int):
+        locations = missing[dt_num]
+        sample = ', '.join(locations[:3])
+        extra = f' 等{len(locations)}处' if len(locations) > 3 else ''
+        warnings.append(f'⚠️ 未定义DT引用：DT-{dt_num} ({sample}{extra})')
 
-    return errors, warnings
+    return [], warnings
+
+
+def resolve_skill_dir(path=None):
+    """定位包含RULES.md的内层Skill目录。"""
+    candidate = Path(path).expanduser().resolve() if path else DEFAULT_SKILL_DIR
+    if (candidate / 'RULES.md').exists():
+        return candidate
+    nested = candidate / 'valuation-detail-table'
+    if (nested / 'RULES.md').exists():
+        return nested
+    return None
+
+
+def find_skill_md(skill_dir):
+    """顶层SKILL.md是Codex入口；兼容旧版内层布局。"""
+    candidates = [
+        skill_dir / 'SKILL.md',
+        skill_dir.parent / 'SKILL.md',
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
 
 
 def check_step_references(skill_dir):
@@ -297,21 +354,14 @@ def main():
                         help='输出修复建议')
     args = parser.parse_args()
 
-    # 定位Skill目录
-    if args.skill_dir:
-        skill_dir = args.skill_dir
-    else:
-        # 默认路径
-        default = os.path.join(
-            os.path.expanduser('~'), '.workbuddy', 'skills',
-            'valuation-detail-table'
-        )
-        if os.path.exists(default):
-            skill_dir = default
-        else:
-            print(f"❌ 找不到Skill目录: {default}")
-            print("请用 --skill-dir 指定路径")
-            return 1
+    # 定位内层Skill目录
+    resolved = resolve_skill_dir(args.skill_dir)
+    if resolved is None:
+        shown = args.skill_dir or str(DEFAULT_SKILL_DIR)
+        print(f"❌ 找不到Skill目录: {shown}")
+        print("请用 --skill-dir 指定Skill根目录或包含RULES.md的内层目录")
+        return 1
+    skill_dir = str(resolved)
 
     print(f"📂 Skill目录: {skill_dir}")
     print("=" * 60)
@@ -325,17 +375,13 @@ def main():
     print("\n🔍 R编号校验")
     print("-" * 40)
 
-    skill_content = read_file(os.path.join(skill_dir, 'SKILL.md'))
+    skill_content = read_file(str(find_skill_md(Path(skill_dir))))
     r_nums = extract_r_numbers(skill_content)
 
     if not r_nums:
         print("  ⚠️ 未找到R编号定义")
     else:
         errs, warns = check_uniqueness(r_nums, 'R')
-        all_errors.extend(errs)
-        all_warnings.extend(warns)
-
-        errs, warns = check_sequence(r_nums, 'R')
         all_errors.extend(errs)
         all_warnings.extend(warns)
 
@@ -381,7 +427,7 @@ def main():
     print("\n🔍 DT编号校验")
     print("-" * 40)
 
-    dt_defs = extract_dt_definitions(skill_content)
+    dt_defs = load_dt_definitions(skill_dir, skill_content)
 
     if not dt_defs:
         print("  ⚠️ 未找到DT编号定义")

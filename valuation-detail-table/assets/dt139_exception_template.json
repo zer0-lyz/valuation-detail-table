@@ -1,0 +1,6 @@
+{
+  "source_file": "资产负债表.xlsx",
+  "source_sha256": "填写当前BS源文件的SHA256",
+  "tolerance": 1.01,
+  "reason": "填写经项目负责人确认的源报表历史差异原因"
+}

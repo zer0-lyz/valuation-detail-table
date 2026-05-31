@@ -1,0 +1,4 @@
+interface:
+  display_name: "评估明细表填写"
+  short_description: "标准化财务资料并自动填写、勾稽校验资产评估明细表工作簿"
+  default_prompt: "Use $valuation-detail-table to fill and reconcile this appraisal detail-table project end to end."

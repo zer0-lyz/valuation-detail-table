@@ -45,14 +45,14 @@ python validate_sheet_after_fill.py <xlsx_path>
 
 **调用方式**：
 ```bash
-# 默认自动查找Skill目录
-python validate_numbering.py
+# 默认从脚本自身位置自动查找Skill目录
+python3 validate_numbering.py
 
 # 指定Skill目录
-python validate_numbering.py --skill-dir <path>
+python3 validate_numbering.py --skill-dir <path>
 
 # 输出修复建议
-python validate_numbering.py --fix-hints
+python3 validate_numbering.py --fix-hints
 ```
 
 **检查项**：
@@ -65,13 +65,13 @@ python validate_numbering.py --fix-hints
 | DT编号重复 | 同一DT编号被多次定义 |
 | DT编号大间隙 | 连续缺失>5个DT编号 |
 | 虚空文件引用 | 引用了不存在的.md/.py文件 |
-| 虚空DT引用 | Step/CHECK文件引用了SKILL.md中无定义的DT编号 |
+| 未定义DT引用 | Step/CHECK等操作文档引用了RULES.md中无定义的DT编号；按编号聚合为历史清理告警 |
 | Step文件引用 | FLOW.md/SKILL.md引用了不存在的Step文件 |
 
 **返回码**：
 - 0 = 全部通过
-- 1 = 有错误（重复/虚空引用）
-- 2 = 仅有警告（间隙/乱序）
+- 1 = 有错误（重复编号/虚空文件引用）
+- 2 = 仅有警告（间隙/乱序/未定义DT引用）
 
 ## 依赖工具
 
@@ -80,18 +80,18 @@ python validate_numbering.py --fix-hints
 **用途**：`pdf2image` 库的底层依赖，用于将PDF转为PNG图片（DT-132多模态Read兜底、OCR提取均需要）  
 **影响范围**：`valuation-common/scripts/bank_statement_extract.py` 的 `pdf_to_images()` 和 `valuation-common/scripts/pdf_extract.py` 的OCR策略
 
-**Skill内提供的两个包**：
+**可选本机缓存与源码目录**：
 
 | 包 | 类型 | 路径 | 说明 |
 |---|------|------|------|
-| **Release-26.02.0-0** | ✅ 预编译Windows二进制（直接可用） | `scripts/Release-26.02.0-0/poppler-26.02.0/Library/bin/` | 含 `pdftoppm.exe` 及所有DLL依赖，**Windows首选** |
+| **Release-26.02.0-0** | ✅ 可选本机Windows二进制缓存 | `scripts/Release-26.02.0-0/poppler-26.02.0/Library/bin/` | 含`pdftoppm.exe`及DLL；体积较大，不随Git仓库分发 |
 | **poppler-26.05.0** | ⚠️ 源码包（需编译） | `scripts/poppler-26.05.0/` | 含CMakeLists.txt/cpp源码，Linux/macOS可从此编译，Windows不建议 |
 
 **快速配置（Windows）**：
 
 ```bash
-# 1. 将预编译poppler的bin目录加入PATH（每次会话需执行，或写入profile永久生效）
-SKILL_DIR="$HOME/.workbuddy/skills/valuation-detail-table"
+# 1. 如本机已有可选Release缓存，将bin目录加入PATH
+SKILL_DIR="$HOME/.codex/skills/valuation-detail-table/valuation-detail-table"
 export PATH="$SKILL_DIR/scripts/Release-26.02.0-0/poppler-26.02.0/Library/bin:$PATH"
 
 # 2. 验证可用
@@ -112,7 +112,7 @@ def ensure_poppler():
     if shutil.which('pdftoppm'):
         return True
     
-    skill_dir = os.path.join(os.path.expanduser('~'), '.workbuddy', 'skills', 'valuation-detail-table')
+    skill_dir = os.path.join(os.path.expanduser('~'), '.codex', 'skills', 'valuation-detail-table', 'valuation-detail-table')
     
     # 优先级1: Release预编译Windows二进制（直接可用）
     candidates = [

@@ -10,3 +10,4 @@ build/
 .env
 financial-normalizer/output/
 valuation-detail-table/scripts/poppler-*/
+valuation-detail-table/scripts/Release-*/

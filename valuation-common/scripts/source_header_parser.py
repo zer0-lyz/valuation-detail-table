@@ -63,8 +63,8 @@ SOURCE_HEADER_KEYWORDS = {
         'code':            ['科目编码', '科目代码', '科目号', '科目编号', '编码'],
         'name':            ['科目名称', '名称'],
         'direction':       ['余额方向', '方向', '借贷方向'],
-        'beginning_debit': ['期初余额借方', '年初借方', '期初借方余额', '期初借方发生额', '期初借方'],
-        'beginning_credit':['期初余额贷方', '年初贷方', '期初贷方余额', '期初贷方发生额', '期初贷方'],
+        'beginning_debit': ['期初余额借方', '年初借方', '期初借方余额', '期初借方发生额', '期初借方', '期初借方金额', '期初余额金额', '余额金额'],
+        'beginning_credit':['期初余额贷方', '年初贷方', '期初贷方余额', '期初贷方发生额', '期初贷方', '期初贷方金额', '期初余额金额', '余额金额'],
         'current_debit':   ['本期发生借方', '本期借方', '本期借方发生额', '借方发生', '本期借方发生'],
         'current_credit':  ['本期发生贷方', '本期贷方', '本期贷方发生额', '贷方发生', '本期贷方发生'],
         'ending_debit':    ['期末余额借方', '期末借方', '期末借方余额', '借方余额', '期末借方发生额'],
@@ -389,23 +389,72 @@ def locate_header_row(ws, source_type: str = None,
         if non_empty_count < 3:
             continue
 
-        # 检测是否存在双行表头（下一行包含子列头如"借方""贷方"）
+        # ════════════════════════════════════════════════════
+        # 双行表头检测（两种模式）
+        # ════════════════════════════════════════════════════
+        # 子表头关键词
+        _sub_kw = ['借方', '贷方', '借', '贷', '数量', '单价', '金额']
+
+        # 模式A：当前行本身包含子表头关键词 → 当前行是子表头行
+        # （常见于'发生额及余额表'格式：Row5=主表头［期初余额/本期发生/期末余额］,
+        #  Row6=子表头［编码/名称/借方/贷方］，扫描到Row6命中'编码'但Row6本身有'借方''贷方'）
+        _current_has_sub = any(
+            find_col_by_keywords(row_values, [kw]) is not None
+            for kw in ['借方', '贷方', '借', '贷']
+        )
+        if _current_has_sub and row > 1:
+            # 获取上一行作为主表头
+            prev_row_values = []
+            for col in range(1, ws.max_column + 1):
+                val = ws.cell(row - 1, col).value
+                prev_row_values.append(str(val).strip() if val else '')
+
+            _merged = _merge_double_header(prev_row_values, row_values, row, ws)
+            col_map = {}
+            keywords_dict = SOURCE_HEADER_KEYWORDS.get(detected_type, {})
+            for field_name, kw_list in keywords_dict.items():
+                if field_name.startswith('_'):
+                    continue
+                col_idx = find_col_by_keywords(_merged, kw_list)
+                if col_idx is not None:
+                    col_map[field_name] = col_idx + 1  # 转1-based
+            # 后处理
+            if 'ending_debit' in col_map and 'ending_credit' in col_map:
+                col_map.pop('balance', None)
+            if 'beginning_debit' in col_map and 'beginning_credit' in col_map:
+                col_map.pop('beginning_balance', None)
+            return row, col_map
+
+        # 模式B：下一行包含子表头关键词 → 当前行是主表头行，下一行是子表头行
         next_row_values = []
         if row + 1 <= ws.max_row:
             for col in range(1, ws.max_column + 1):
                 val = ws.cell(row + 1, col).value
                 next_row_values.append(str(val).strip() if val else '')
 
-        is_double_header = False
-        double_header_kw = ['借方', '贷方', '借', '贷', '数量', '单价', '金额']
-        for kw in double_header_kw:
-            if find_col_by_keywords(next_row_values, [kw]) is not None:
-                is_double_header = True
-                break
+        is_double_header = any(
+            find_col_by_keywords(next_row_values, [kw]) is not None
+            for kw in _sub_kw
+        )
 
         if is_double_header:
             # 合并双行表头：主表头+子表头 → 组合列名
             merged_values = _merge_double_header(row_values, next_row_values, row, ws)
+
+            # DT-FIX: 三层表头（喜发格式：Row7主+Row8子+Row9数量/金额）
+            _row2 = row + 2
+            if _row2 <= ws.max_row:
+                _row9_vals = []
+                for col in range(1, ws.max_column + 1):
+                    val = ws.cell(_row2, col).value
+                    _row9_vals.append(str(val).strip() if val else '')
+                _has_triple = any(
+                    find_col_by_keywords(_row9_vals, [kw]) is not None
+                    for kw in ['数量', '金额']
+                )
+                if _has_triple:
+                    merged_values = _merge_double_header(merged_values, _row9_vals, _row2, ws)
+
             col_map = {}
             keywords_dict = SOURCE_HEADER_KEYWORDS.get(detected_type, {})
             for field_name, kw_list in keywords_dict.items():
@@ -414,15 +463,21 @@ def locate_header_row(ws, source_type: str = None,
                 col_idx = find_col_by_keywords(merged_values, kw_list)
                 if col_idx is not None:
                     col_map[field_name] = col_idx + 1  # 转1-based
-
-            # 后处理：如果ending_debit/ending_credit都存在，移除balance
-            # （避免用"期末余额借方"列替代真正的"期末余额"单列）
+            # 金额列优先：对金额相关字段，如果匹配到'数量'列但旁边有'金额'列，切换到金额列
+            _finance_fields = ['current_debit', 'current_credit', 'beginning_debit', 'beginning_credit', 'balance']
+            for _ff in _finance_fields:
+                _fc = col_map.get(_ff)
+                if _fc and _fc < len(merged_values):
+                    _header_text = merged_values[_fc - 1] if _fc > 0 else ''
+                    if '数量' in _header_text and _fc < len(merged_values):
+                        _next_text = merged_values[_fc] if _fc < len(merged_values) else ''
+                        if '金额' in _next_text:
+                            col_map[_ff] = _fc + 1
+            # 后处理
             if 'ending_debit' in col_map and 'ending_credit' in col_map:
                 col_map.pop('balance', None)
-            # 同理：如果beginning_debit/beginning_credit都存在，移除beginning_balance
             if 'beginning_debit' in col_map and 'beginning_credit' in col_map:
                 col_map.pop('beginning_balance', None)
-
             return row, col_map
         else:
             # 单行表头
@@ -434,7 +489,6 @@ def locate_header_row(ws, source_type: str = None,
                 col_idx = find_col_by_keywords(row_values, kw_list)
                 if col_idx is not None:
                     col_map[field_name] = col_idx + 1  # 转1-based
-
             return row, col_map
 
     return 0, {}
@@ -574,8 +628,17 @@ def parse_subject_balance(filepath: str) -> Dict[str, Any]:
             balance = 0.0
             direction = ''
 
-            if balance_col:
-                balance = _safe_float(ws.cell(row, balance_col).value)
+            _balance_src_col = balance_col
+            # DT-FIX: 阳江晶步格式——期末余额/原币(Col17,空)+/本币(Col18,有值)
+            # 如果balance_col指向原币列且下一列是"本币"，自动切换
+            if balance_col and balance_col < ws.max_column:
+                _next_hdr = str(ws.cell(header_row, balance_col + 1).value or ws.cell(header_row + 1, balance_col + 1).value or '').strip()
+                _cur_sub = str(ws.cell(header_row + 1, balance_col).value or '').strip()
+                if _cur_sub == '原币' and ('本币' in _next_hdr or '本币' in _next_hdr):
+                    _balance_src_col = balance_col + 1
+
+            if _balance_src_col:
+                balance = _safe_float(ws.cell(row, _balance_src_col).value)
             elif ending_debit_col and ending_credit_col:
                 d = _safe_float(ws.cell(row, ending_debit_col).value)
                 c = _safe_float(ws.cell(row, ending_credit_col).value)
@@ -595,18 +658,73 @@ def parse_subject_balance(filepath: str) -> Dict[str, Any]:
                 if d:
                     direction = str(d).strip()
 
+            # DT-FIX: 阳江晶步格式——原币/本币子表头，自动切换到本币列
+            _cur_debit_col = current_debit_col
+            _cur_credit_col = current_credit_col
+            if current_debit_col and current_debit_col < ws.max_column:
+                if str(ws.cell(header_row + 1, current_debit_col).value or '').strip() == '原币':
+                    _next = str(ws.cell(header_row + 1, current_debit_col + 1).value or '').strip()
+                    if _next == '本币':
+                        _cur_debit_col = current_debit_col + 1
+            if current_credit_col and current_credit_col < ws.max_column:
+                if str(ws.cell(header_row + 1, current_credit_col).value or '').strip() == '原币':
+                    _next = str(ws.cell(header_row + 1, current_credit_col + 1).value or '').strip()
+                    if _next == '本币':
+                        _cur_credit_col = current_credit_col + 1
+
+            # DT-FIX: 期初借贷列冲突（喜发等：beginning_debit=beginning_credit→同一列）
+            _bd_col = beginning_debit_col
+            _bc_col = beginning_credit_col
+            if _bd_col and _bc_col and _bd_col == _bc_col:
+                _same_begin_val = _safe_float(ws.cell(row, _bd_col).value)
+                if direction == '借':
+                    _bd_col, _bc_col = _bd_col, None
+                elif direction == '贷':
+                    _bd_col, _bc_col = None, _bc_col
+                else:
+                    _bd_col, _bc_col = None, None
+
+            _ed = _safe_float(ws.cell(row, ending_debit_col).value) if ending_debit_col else 0.0
+            _ec = _safe_float(ws.cell(row, ending_credit_col).value) if ending_credit_col else 0.0
+            # DT-FIX: 无期末借贷列但有方向+余额→按方向拆分
+            if not ending_debit_col and not ending_credit_col:
+                if balance != 0:
+                    if direction == '借':
+                        _ed = balance
+                    elif direction == '贷':
+                        _ec = balance
+                    else:
+                        _ed = balance
+                elif _cur_debit_col or _cur_credit_col or _bd_col:
+                    # DT-FIX: 从期初+本期发生计算（喜发等无期末余额列格式）
+                    _beg = _safe_float(ws.cell(row, _bd_col).value) if _bd_col else 0.0
+                    _cd = _safe_float(ws.cell(row, _cur_debit_col).value) if _cur_debit_col else 0.0
+                    _cc = _safe_float(ws.cell(row, _cur_credit_col).value) if _cur_credit_col else 0.0
+                    if _beg or _cd or _cc:
+                        _net = _beg + _cd - _cc
+                        if direction == '借':
+                            _ed = max(_net, 0)
+                        elif direction == '贷':
+                            _ec = max(-_net, 0)
+                        else:
+                            _ed = max(_net, 0) if _net >= 0 else 0
+                            _ec = max(-_net, 0) if _net < 0 else 0
+
+            # DT-FIX: 喜发格式——balance=0但ed/ec有值时，balance取ed或ec的值
+            if balance == 0 and (_ed or _ec):
+                balance = _ed if _ed else _ec
             subjects_item = {
                 'code': code,
                 'name': name,
                 'balance': balance,
                 'direction': direction,
                 'level': int(len(code) // 2) if len(code) <= 8 else 1,
-                'beginning_debit': _safe_float(ws.cell(row, beginning_debit_col).value) if beginning_debit_col else 0.0,
-                'beginning_credit': _safe_float(ws.cell(row, beginning_credit_col).value) if beginning_credit_col else 0.0,
-                'current_debit': _safe_float(ws.cell(row, current_debit_col).value) if current_debit_col else 0.0,
-                'current_credit': _safe_float(ws.cell(row, current_credit_col).value) if current_credit_col else 0.0,
-                'ending_debit': _safe_float(ws.cell(row, ending_debit_col).value) if ending_debit_col else 0.0,
-                'ending_credit': _safe_float(ws.cell(row, ending_credit_col).value) if ending_credit_col else 0.0,
+                'beginning_debit': _safe_float(ws.cell(row, _bd_col).value) if _bd_col else 0.0,
+                'beginning_credit': _safe_float(ws.cell(row, _bc_col).value) if _bc_col else 0.0,
+                'current_debit': _safe_float(ws.cell(row, _cur_debit_col).value) if _cur_debit_col else 0.0,
+                'current_credit': _safe_float(ws.cell(row, _cur_credit_col).value) if _cur_credit_col else 0.0,
+                'ending_debit': _ed,
+                'ending_credit': _ec,
             }
 
             if level_col:
@@ -677,6 +795,20 @@ def parse_balance_sheet(filepath: str) -> Dict[str, Any]:
                 ws = wb[name]
                 break
         if ws is None:
+            # DT-FIX: 按内容搜索——扫描所有sheet查找含"资产负债表"文本的sheet
+            for name in wb.sheetnames:
+                _tws = wb[name]
+                for r in range(1, min(_tws.max_row + 1, 5)):
+                    for c in range(1, min(_tws.max_column + 1, 10)):
+                        _v = str(_tws.cell(row=r, column=c).value or '')
+                        if '资产负债表' in _v or '会企01' in _v:
+                            ws = _tws
+                            break
+                    if ws:
+                        break
+                if ws:
+                    break
+        if ws is None:
             ws = wb[wb.sheetnames[0]]
 
         # ── P1补充+DT-210: 提取表头元信息（编制单位/公司全称/评估基准日） ──
@@ -714,6 +846,13 @@ def parse_balance_sheet(filepath: str) -> Dict[str, Any]:
                         if name_part:
                             company_full_name = name_part
 
+                    # DT-FIX: 策略A2: "单位：公司名"格式（新华体育等，无"编制"前缀）
+                    if not company_full_name and '单位' in val_stripped and '元' not in val_stripped:
+                        name_part = re.sub(r'^单位[：:]\s*', '', val_stripped).strip()
+                        # 只有含'公司'/'企业'/'厂'等实体词才确认是公司名
+                        if name_part and any(kw in name_part for kw in ['公司', '企业', '厂', '集团', '有限']):
+                            company_full_name = name_part
+
                     # DT-210 策略B: 无"编制单位"前缀的纯公司名
                     # 判定条件：位于"资产负债表"标题行下方1-2行、A列(c=1)、
                     # 不含"项目/行次/列/单位/金额"等表头关键词、长度≥4（排除"单位：元"等短文本）
@@ -729,23 +868,29 @@ def parse_balance_sheet(filepath: str) -> Dict[str, Any]:
 
                     # ── 提取评估基准日 ──
                     if not valuation_date_from_bs:
-                        # 优先匹配"年月日"完整格式
-                        date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', val_stripped)
-                        if date_match:
-                            y, m, d = date_match.groups()
+                        # 优先匹配 YYYY-MM-DD 格式（新华体育等）
+                        date_match_iso = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', val_stripped)
+                        if date_match_iso:
+                            y, m, d = date_match_iso.groups()
                             valuation_date_from_bs = f'{y}年{int(m)}月{int(d)}日'
                         else:
-                            # DT-210: 降级匹配"年月"格式（无"日"，如"2025年12月"）
-                            date_match_ym = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月(?!.*日)', val_stripped)
-                            if date_match_ym:
-                                y, m = date_match_ym.groups()
-                                # 默认月末：用calendar取当月最后一天
-                                try:
-                                    import calendar
-                                    last_day = calendar.monthrange(int(y), int(m))[1]
-                                    valuation_date_from_bs = f'{y}年{int(m)}月{last_day}日'
-                                except (ValueError, calendar.IllegalMonthError):
-                                    valuation_date_from_bs = f'{y}年{int(m)}月31日'
+                            # 次优匹配"年月日"完整格式
+                            date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', val_stripped)
+                            if date_match:
+                                y, m, d = date_match.groups()
+                                valuation_date_from_bs = f'{y}年{int(m)}月{int(d)}日'
+                            else:
+                                # DT-210: 降级匹配"年月"格式（无"日"，如"2025年12月"）
+                                date_match_ym = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月(?!.*日)', val_stripped)
+                                if date_match_ym:
+                                    y, m = date_match_ym.groups()
+                                    # 默认月末：用calendar取当月最后一天
+                                    try:
+                                        import calendar
+                                        last_day = calendar.monthrange(int(y), int(m))[1]
+                                        valuation_date_from_bs = f'{y}年{int(m)}月{last_day}日'
+                                    except (ValueError, calendar.IllegalMonthError):
+                                        valuation_date_from_bs = f'{y}年{int(m)}月31日'
 
         if company_full_name:
             result['company_full_name'] = company_full_name
@@ -773,11 +918,11 @@ def parse_balance_sheet(filepath: str) -> Dict[str, Any]:
 
         result['header_row'] = header_row
 
-        # DT-153v3+DT-212: 判断格式——动态检测右栏是否有独立表头
-        # 不再固定检查第5列，而是从第5列开始扫描是否有"负债""所有者权益"等关键词
+        # DT-153v3+DT-212+DT-FIX: 判断格式——动态检测右栏是否有独立表头
+        # 从第4列开始扫描（新华体育格式：Col4=负债和所有者权益，Col1-3为资产侧）
         # DT-212: 去除空格后匹配，因为BS表头常为"项            目"含大量空格
         right_header = None
-        for c in range(5, min(ws.max_column + 1, 15)):
+        for c in range(4, min(ws.max_column + 1, 15)):
             val = ws.cell(header_row, c).value
             if val:
                 val_compact = str(val).replace(' ', '').replace('\u3000', '')
@@ -854,10 +999,10 @@ def parse_balance_sheet(filepath: str) -> Dict[str, Any]:
             if _col_map_liab_end > ending_left_col:
                 ending_right_col = _col_map_liab_end
 
-            # 动态扫描右栏列位
+            # 动态扫描右栏列位（从右栏label列开始，避免扫到左栏列）
             _right_beginning = None
             _right_ending = None
-            for c in range(5, min(ws.max_column + 1, 15)):
+            for c in range(max(5, label_right_col), min(ws.max_column + 1, 20)):
                 val = ws.cell(header_row, c).value
                 if val:
                     v = str(val).strip()

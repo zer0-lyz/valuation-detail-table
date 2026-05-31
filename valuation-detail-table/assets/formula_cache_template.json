@@ -1,0 +1,15 @@
+{
+  "engine": "none",
+  "formula_chain_valid": true,
+  "cache_values_valid": false,
+  "status": "RECALC_REQUIRED",
+  "blocking": true,
+  "note": "openpyxl不执行公式引擎。在Excel/LibreOffice中打开并Ctrl+Alt+F9重算后，将此文件cache_values_valid设为true、blocking设为false并将status设为OK",
+  "generated_at": "",
+  "checks": {
+    "SUM_formulas_exist": null,
+    "cross_sheet_refs_exist": null,
+    "lookup_formulas_exist": null,
+    "recommended_action": "RECALC_IN_EXCEL_THEN_CONFIRM"
+  }
+}

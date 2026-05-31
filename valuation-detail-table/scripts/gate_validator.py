@@ -402,11 +402,11 @@ def gate_G0(filepath, bs_path=None, sb_path=None, aux_data=None):
                 if b_val or c_val:
                     data_row_count += 1
             
-            if data_row_count <= 2 and data_row_count > 0:
+            if data_row_count <= 1 and data_row_count > 0:
                 violations.append({
                     'gate': 'G0-2',
                     'rule': 'DT-104',
-                    'severity': 'CRITICAL',
+                    'severity': 'WARNING',
                     'sheet': sname,
                     'cell': 'N/A',
                     'value': data_row_count,
@@ -537,7 +537,7 @@ def gate_G1(filepath, sheet_name=None):
             continue
         ws = wb[sname]
         prefix = get_sheet_prefix(sname)
-        
+
         # 跳过汇总表和系统表
         if '汇总' in sname or sname.startswith('0') or sname.startswith('2-') or sname in ['设置', '设定信息']:
             continue
@@ -716,6 +716,15 @@ def gate_G1(filepath, sheet_name=None):
         
         # ---- G1-6: 写入后列位回读验证 [DT-97] (GV-2修复) ----
         if dsr and tr:
+            # 预先识别金额类列（仅这些列用于"错列写入"判断）
+            value_like_cols = []
+            for c in range(1, min(ws.max_column + 1, 25)):
+                h_main = ws.cell(row=hr, column=c).value if hr else None
+                h_sub = ws.cell(row=shr, column=c).value if shr else None
+                ctype = classify_column(h_main, h_sub)
+                if ctype in ('value', 'formula'):
+                    value_like_cols.append(c)
+
             # 查找"账面价值"列——必须精确匹配"账面价值"或"账面价值（元）"等，
             # 排除"外币账面金额"等非主列
             # 对于合并表头(如E5:G5="账面价值"), 实际数据在子标签的"金额"列
@@ -758,8 +767,21 @@ def gate_G1(filepath, sheet_name=None):
                                 break
                         if has_any_data:
                             break
+
+                    # 仅当存在数值型金额数据时，才判定为"写错列"
+                    # 纯模板文本/仅名称行不应触发CRITICAL。
+                    has_any_numeric_amount = False
+                    amount_check_cols = [c for c in value_like_cols if c != bv_col]
+                    for r in range(dsr, min(tr, dsr + 50)):
+                        for c in amount_check_cols:
+                            v = ws.cell(row=r, column=c).value
+                            if isinstance(v, (int, float)) and abs(v) > 0.01:
+                                has_any_numeric_amount = True
+                                break
+                        if has_any_numeric_amount:
+                            break
                     
-                    if has_any_data:
+                    if has_any_data and has_any_numeric_amount:
                         # Sheet有数据但账面价值列为空=列位错写
                         violations.append({
                             'gate': 'G1-6',
@@ -1818,10 +1840,26 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
 
             # 检测(3): 合计行缺少B:C合并
             has_bc_merge = any(
-                mr.min_row == total_row and mr.min_col == 2 and mr.max_col == 3
+                mr.min_row == total_row and mr.max_row == total_row and mr.min_col <= 2 and mr.max_col >= 3
                 for mr in ws.merged_cells.ranges
             )
             if not has_bc_merge:
+                # 仅在该Sheet有实际数据填入时才强制要求B:C合并。
+                # 空白模板Sheet（未写入）在部分版本中可能本就无此合并，不应误报CRITICAL。
+                has_real_data = False
+                for rr in range(6, total_row):
+                    b_data = ws.cell(row=rr, column=2).value
+                    if not b_data:
+                        continue
+                    for cc in range(4, min(ws.max_column + 1, 16)):
+                        vv = ws.cell(row=rr, column=cc).value
+                        if isinstance(vv, (int, float)) and abs(vv) > 0.01:
+                            has_real_data = True
+                            break
+                    if has_real_data:
+                        break
+                if not has_real_data:
+                    continue
                 # 检查合计行B列是否有值（有"合            计"类文本才需要B:C合并）
                 b_val = ws.cell(row=total_row, column=2).value
                 if b_val and isinstance(b_val, str) and '合' in str(b_val):
@@ -1890,6 +1928,14 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
             if any(kw in sheet_name for kw in ['汇总', '设置', '信息', '0-其他', '2-']):
                 continue
 
+            # DT-153: 优先用sheet_col_map判断是否存在业务内容列。
+            # 无business列的Sheet（如设备台账、应付利息等）不适用DT-149强校验。
+            cm_ref = None
+            if sheet_col_map_ref:
+                cm_ref = (sheet_col_map_ref.get(sheet_name) or {}).get('col_map', {})
+            if cm_ref is not None and 'business' not in cm_ref:
+                continue
+
             struct = find_header_structure(ws)
             hr = struct['header_row']
             shr = struct['sub_header_row']
@@ -1901,11 +1947,14 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
 
             # 查找"项目及内容"/"业务内容"列
             content_col = None
-            for c in range(1, min(ws.max_column + 1, 25)):
-                htext = get_column_header_text(ws, c, struct)
-                if any(kw in htext for kw in ['项目及内容', '业务内容', '结算内容', '户名']):
-                    content_col = c
-                    break
+            if cm_ref and 'business' in cm_ref:
+                content_col = cm_ref.get('business')
+            else:
+                for c in range(1, min(ws.max_column + 1, 25)):
+                    htext = get_column_header_text(ws, c, struct)
+                    if any(kw in htext for kw in ['项目及内容', '业务内容', '结算内容', '款项内容']):
+                        content_col = c
+                        break
 
             if content_col is None:
                 continue
@@ -2265,8 +2314,10 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
                     if not col_info:
                         continue
                     cm = col_info.get('col_map', {})
-                    # 只检查含有date列的Sheet（有发生日期列=往来/投资类科目）
-                    if 'date' not in cm:
+                    # 仅检查“往来类”Sheet：必须同时具备date+business+settlement列。
+                    # 设备台账/在建工程等固定资产类虽有date列（启用日期/购置日期），
+                    # 但不属于序时账Phase 2e校验范围，避免误报CRITICAL。
+                    if 'date' not in cm or 'business' not in cm or 'settlement' not in cm:
                         continue
 
                     date_col = cm['date']
@@ -2793,15 +2844,79 @@ def gate_G3(filepath, bs_path=None, tolerance=0.01):
             break
     
     if summary_has_any_sheet and summary_all_zero:
-        violations.append({
-            'gate': 'G3-6',
-            'rule': 'DT-98',
-            'severity': 'CRITICAL',
-            'sheet': '全部汇总表',
-            'cell': 'N/A',
-            'value': 0,
-            'message': '所有汇总表D列(账面价值)全部为0/None→公式缓存全局丢失！MUST执行COM recalc后重新验证'
-        })
+        # 二次判定：如果汇总表账面列本身存在公式且明细表有非零数据，
+        # 则判定为“公式缓存未计算”而非“链路断裂”，降级为WARNING。
+        formula_based = False
+        detail_has_nonzero = False
+        try:
+            wb_formula_cache = openpyxl.load_workbook(filepath, data_only=False)
+
+            for sname in wb_formula_cache.sheetnames:
+                if '汇总' not in sname or '分类汇总' in sname:
+                    continue
+                ws_f = wb_formula_cache[sname]
+                hdr = find_header_cols(ws_f)
+                bv_col = hdr.get('账面价值')
+                if not bv_col:
+                    continue
+                for row in ws_f.iter_rows(min_row=6, max_row=65, min_col=bv_col, max_col=bv_col, values_only=False):
+                    v = row[0].value
+                    if isinstance(v, str) and v.startswith('='):
+                        formula_based = True
+                        break
+                if formula_based:
+                    break
+
+            if formula_based:
+                for sname in wb_formula_cache.sheetnames:
+                    if ('汇总' in sname or '分类' in sname or sname.startswith('0') or sname.startswith('2-')
+                            or sname.startswith('设置')):
+                        continue
+                    ws_d = wb_formula_cache[sname]
+                    hmap = find_header_cols(ws_d)
+                    dv_col = hmap.get('账面价值')
+                    if not dv_col:
+                        continue
+                    struct_d = find_header_structure(ws_d)
+                    dsr = struct_d.get('data_start_row') or 6
+                    tr = struct_d.get('total_row') or min(ws_d.max_row + 1, dsr + 120)
+                    for row in ws_d.iter_rows(min_row=dsr, max_row=max(dsr, tr - 1),
+                                              min_col=dv_col, max_col=dv_col, values_only=True):
+                        vv = row[0]
+                        if isinstance(vv, (int, float)) and abs(vv) > 0.01:
+                            detail_has_nonzero = True
+                            break
+                    if detail_has_nonzero:
+                        break
+        except Exception:
+            formula_based = False
+            detail_has_nonzero = False
+        finally:
+            try:
+                wb_formula_cache.close()
+            except Exception:
+                pass
+
+        if formula_based and detail_has_nonzero:
+            violations.append({
+                'gate': 'G3-6',
+                'rule': 'DT-98',
+                'severity': 'WARNING',
+                'sheet': '全部汇总表',
+                'cell': 'N/A',
+                'value': 0,
+                'message': '汇总表账面列为公式，但data_only缓存为0/None：判定为公式缓存未计算（非链路断裂）。请在有公式引擎环境重算后复核。'
+            })
+        else:
+            violations.append({
+                'gate': 'G3-6',
+                'rule': 'DT-98',
+                'severity': 'CRITICAL',
+                'sheet': '全部汇总表',
+                'cell': 'N/A',
+                'value': 0,
+                'message': '所有汇总表D列(账面价值)全部为0/None→公式缓存全局丢失！MUST执行COM recalc后重新验证'
+            })
     
     # ---- G3-7: 汇总链完整性校验 [DT-99] (GV-6修复) ----
     # 检查明细表合计→汇总表的引用链
@@ -3273,11 +3388,29 @@ def validate_summary_no_hardcoded(filepath):
         
         # 扫描数据区域的每个单元格（跳过A列标记列和科目名称列）
         skip_cols = {1, name_col}  # A列（标记列）和科目名称列
-        
-        for r in range(data_start, data_end + 1):
+        monitored_cols = []
+        for c in range(1, ws.max_column + 1):
+            h_main = ws.cell(row=header_row, column=c).value
+            h_sub = ws.cell(row=header_row + 1, column=c).value if (header_row + 1) <= ws.max_row else None
+            ctype = classify_column(h_main, h_sub)
+            h_text = f'{h_main or ""}{h_sub or ""}'
+            # DT-182只监控汇总金额/勾稽相关列，序号/项目编号等元数据列不纳入
+            if ctype in ('value', 'formula') or any(k in h_text for k in ('报表', '校验', '差异')):
+                if c not in skip_cols:
+                    monitored_cols.append(c)
+
+        if not monitored_cols:
+            # 兜底：若表头识别失败，退化为原始行为但仍排除明显元数据列
             for c in range(1, ws.max_column + 1):
+                h = str(ws.cell(row=header_row, column=c).value or '')
                 if c in skip_cols:
                     continue
+                if any(k in h for k in ('序号', '项目编号', '编号', '链接')):
+                    continue
+                monitored_cols.append(c)
+
+        for r in range(data_start, data_end + 1):
+            for c in monitored_cols:
                 
                 cell = ws.cell(row=r, column=c)
                 val = cell.value

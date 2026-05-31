@@ -11,7 +11,7 @@ quality_assurance.py — 验收流程：填写完成后自动质检
   5. FORMAT_INTEGRITY    — 序号连续、SUM公式覆盖正确
   6. ASSET_CLASSIFICATION — 固定资产原值合计 vs BS
 
-失败时自动触发修复+重检，最多3轮，超限转人工。
+失败时仅对编排器已注册的安全路径执行重跑；禁止自动修改BS差异。
 """
 
 import json, os, sys, glob, re, logging
@@ -152,7 +152,7 @@ def run_qa(project_dir, cache_dir=None, round_num=0, max_rounds=3):
             result['recommend_manual'] = True
             result['summary'] = f"⚠️ 第{round_num+1}轮仍有{len(errors)}项未通过，建议人工验收"
         else:
-            result['summary'] = f"🔄 第{round_num+1}轮发现{len(errors)}项问题，将自动修复并重检"
+            result['summary'] = f"🔄 第{round_num+1}轮发现{len(errors)}项问题，将按已注册安全路径处理并重检"
     else:
         result['summary'] = f"✅ 全部{passed_count}/{total_count}项检查通过！"
     
@@ -160,22 +160,57 @@ def run_qa(project_dir, cache_dir=None, round_num=0, max_rounds=3):
     return result
 
 
-def auto_fix(project_dir, checks, cache_dir=None):
-    """根据QA失败项执行自动修复
+# 注册式修复计划：实际执行由dt_runner编排器负责。
+_AUTO_FIX_REGISTRY = {
+    CHECK_BLANK_HIDDEN: {
+        'action': 'rerun_phase5',
+        'allow_auto': True,
+        'description': '空白表未隐藏→自动隐藏'
+    },
+    CHECK_FORMAT: {
+        'action': 'rerun_phase4',
+        'allow_auto': True,
+        'description': '格式完整性失败→重跑格式修复'
+    },
+    CHECK_ASSET: {
+        'action': 'rerun_phase2',
+        'allow_auto': True,
+        'description': '固定资产分类差异→按明确规则重建缓存后重跑'
+    },
+    'FORMULA_CACHE_STALE': {
+        'action': None,
+        'allow_auto': False,  # 需要公式引擎
+        'description': '公式缓存未刷新→需手动在Excel/LibreOffice中重算'
+    },
+    CHECK_BS_RECONCILIATION: {
+        'action': None,
+        'allow_auto': False,
+        'description': 'BS勾稽差异→禁止自动改数'
+    },
+}
 
-    Returns:
-        dict: {check_id: {fixed: bool, action: str}}
+def auto_fix(project_dir, checks, cache_dir=None):
+    """根据QA失败项生成注册式修复计划。
+
+    非注册检查项或禁止自动修复的检查项必须转人工。
     """
     fixes = {}
-    
-    # TODO: 实现自动修复逻辑
-    # 目前框架只记录需要修复的项，实际修复调用已有Phase函数
-    
     for check_id, check_result in checks.items():
-        if check_result['pass']:
+        if check_result.get('pass', False):
             continue
-        fixes[check_id] = {'fixed': False, 'action': f'需要人工处理: {check_id}'}
-    
+        registry = _AUTO_FIX_REGISTRY.get(check_id)
+        if not registry:
+            fixes[check_id] = {'fixed': False, 'action': f'未注册的检查项，需人工处理'}
+            continue
+        if not registry['allow_auto']:
+            fixes[check_id] = {'fixed': False, 'action': f"{registry['description']} (禁止自动修复)"}
+            continue
+        fixes[check_id] = {
+            'fixed': False,
+            'scheduled': True,
+            'action': registry['action'],
+            'description': registry['description'],
+        }
     return fixes
 
 
@@ -216,6 +251,19 @@ def _check_bs_reconciliation(wb, bs_data):
         return {'pass': False, 'detail': '2-分类汇总 sheet不存在', 'score': 0}
     
     ws = wb['2-分类汇总']
+    aux_lookup = {}
+    if '_BS对照' in wb.sheetnames:
+        ws_aux = wb['_BS对照']
+        for r in range(2, ws_aux.max_row + 1):
+            k = str(ws_aux.cell(row=r, column=1).value or '').strip().replace(' ', '').replace('\u3000', '')
+            v = ws_aux.cell(row=r, column=4).value  # FIX: 读期末余额(Col4)而非类型(Col2)
+            if k and isinstance(v, (int, float)):
+                aux_lookup[k] = float(v)
+            elif k:
+                # 兜底：尝试Col3(期初余额)
+                v3 = ws_aux.cell(row=r, column=3).value
+                if isinstance(v3, (int, float)):
+                    aux_lookup[k] = float(v3)
     bs_items = {str(item.get('label', '')).replace(' ', '').replace('\u3000', ''): item.get('ending_balance', 0)
                 for item in bs_data.get('items', []) if item.get('ending_balance')}
     
@@ -238,13 +286,16 @@ def _check_bs_reconciliation(wb, bs_data):
         if name_key in bs_items:
             total_items += 1
             bs_val = bs_items[name_key]
-            if isinstance(i_val, (int, float)):
-                if abs(bs_val) < 0.01 and abs(i_val) < 0.01:
+            resolved_i_val = i_val
+            if isinstance(i_val, str) and i_val.startswith('='):
+                resolved_i_val = aux_lookup.get(name_key, 0)
+            if isinstance(resolved_i_val, (int, float)):
+                if abs(bs_val) < 0.01 and abs(resolved_i_val) < 0.01:
                     matching_items += 1
                 else:
-                    diff_pct = abs(bs_val - i_val) / max(abs(bs_val), 0.01)
+                    diff_pct = abs(bs_val - resolved_i_val) / max(abs(bs_val), 0.01)
                     if diff_pct > 0.005:  # 0.5%
-                        mismatches.append(f"{name_s}: BS={bs_val:,.2f}, I列={i_val:,.2f}, diff={diff_pct:.2%}")
+                        mismatches.append(f"{name_s}: BS={bs_val:,.2f}, I列={resolved_i_val:,.2f}, diff={diff_pct:.2%}")
                     else:
                         matching_items += 1
     
@@ -402,7 +453,16 @@ def _check_format_integrity(wb):
 
 def _check_asset_classification(wb, bs_data):
     """检查6: 固定资产分类合计 vs BS"""
-    # 从2-分类汇总D列(科目名称)+I列(报表金额，硬编码)读取
+    # 从2-分类汇总D列(科目名称)+I列读取；I列为公式时回退到_BS对照
+    aux_lookup = {}
+    if '_BS对照' in wb.sheetnames:
+        ws_aux = wb['_BS对照']
+        for r in range(2, ws_aux.max_row + 1):
+            k = str(ws_aux.cell(row=r, column=1).value or '').strip().replace(' ', '').replace('\u3000', '')
+            v = ws_aux.cell(row=r, column=2).value
+            if k and isinstance(v, (int, float)):
+                aux_lookup[k] = float(v)
+
     if '2-分类汇总' in wb.sheetnames:
         ws_sum = wb['2-分类汇总']
         fa_total = 0
@@ -412,6 +472,8 @@ def _check_asset_classification(wb, bs_data):
                 i_val = ws_sum.cell(row=r, column=9).value  # I列=报表金额(硬编码)
                 if isinstance(i_val, (int, float)):
                     fa_total += i_val
+                elif isinstance(i_val, str) and i_val.startswith('='):
+                    fa_total += aux_lookup.get('固定资产', 0)
                 break  # 只取第一行"固定资产"
     else:
         fa_total = 0

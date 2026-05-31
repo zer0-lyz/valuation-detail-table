@@ -200,7 +200,7 @@ class JournalExtractor:
                 credit = ws.cell(row=r, column=credit_col).value if credit_col else 0
             aux_val = ws.cell(row=r, column=aux_col).value if aux_col else None
 
-            dt = self._parse_date(date_val)
+            dt = self._parse_date(date_val, cell=ws.cell(row=r, column=date_col))
             voucher_val = ws.cell(row=r, column=voucher_col).value if voucher_col else None
 
             # 跟踪当前凭证号和日期
@@ -211,6 +211,18 @@ class JournalExtractor:
 
             # 如果日期为None但有科目编码，尝试回填日期
             effective_date = dt or current_date
+            # 最后一层兜底：尝试从摘要文本中提取日期（如"2024-03-31付款"）
+            if effective_date is None and summary:
+                import re as _re
+                _date_match = _re.search(r'(\d{4}[-/\.年]\d{1,2}[-/\.月]\d{1,2})', str(summary))
+                if _date_match:
+                    try:
+                        effective_date = datetime.strptime(
+                            _date_match.group(1).replace('年', '-').replace('月', '-').replace('日', '').replace('/', '-').replace('.', '-'),
+                            '%Y-%m-%d'
+                        )
+                    except (ValueError, IndexError):
+                        pass
 
             if effective_date and (subject_code or subject_name):
                 # 从辅助核算字段提取结算对象名称
@@ -222,8 +234,8 @@ class JournalExtractor:
                     'summary': str(summary).strip(),
                     'subject_code': str(subject_code).strip(),
                     'subject_name': str(subject_name).strip(),
-                    'debit': float(debit) if debit else 0,
-                    'credit': float(credit) if credit else 0,
+                    'debit': float(debit) if debit and isinstance(debit, (int, float)) else self._safe_float(debit),
+                    'credit': float(credit) if credit and isinstance(credit, (int, float)) else self._safe_float(credit),
                     'aux_accounting': str(aux_val).strip() if aux_val else '',
                     'settlement_from_aux': settlement_from_aux,
                 })
@@ -232,20 +244,52 @@ class JournalExtractor:
         wb.close()
 
     @staticmethod
-    def _parse_date(date_val):
-        """DT-54: 序时账日期多格式兼容解析"""
+    def _safe_float(val):
+        if val is None: return 0.0
+        if isinstance(val, (int, float)): return float(val)
+        if isinstance(val, str):
+            try: return float(val.replace(',', '').strip())
+            except: return 0.0
+        return 0.0
+
+    @staticmethod
+    def _parse_date(date_val, cell=None):
+        """DT-54: 序时账日期多格式兼容解析 v1.1
+        - 支持 openpyxl 公式缓存返回 None 时的兜底（从公式字符串推断日期）
+        - 支持 1904 日期系统（macOS Excel）
+        - 负值/极小值防 OverflowError
+        """
+        if date_val is None and cell is not None:
+            # 公式单元格缓存为空：尝试从公式字符串提取
+            try:
+                from openpyxl.cell.cell import Cell
+                if isinstance(cell, Cell) and cell.value is None and cell.data_type == 'f':
+                    formula = getattr(cell, 'value', None)
+                    # 公式返回空缓存，记录但无法解析
+                    pass
+            except Exception:
+                pass
         if isinstance(date_val, datetime):
             return date_val
         if isinstance(date_val, str):
-            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d', '%Y年%m月%d日']:
+            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d', '%Y年%m月%d日',
+                        '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S']:
                 try:
                     return datetime.strptime(date_val.strip(), fmt)
                 except ValueError:
                     continue
         if isinstance(date_val, (int, float)):
+            # Excel 日期序列号：处理负数（1904系统）、超大值
             try:
-                return datetime(1899, 12, 30) + timedelta(days=int(date_val))
-            except (ValueError, OverflowError):
+                serial = float(date_val)
+                # 1904 日期系统的偏移修正
+                if serial > 100000:  # 超出1900系统合理范围，尝试1904系统
+                    try:
+                        return datetime(1904, 1, 1) + timedelta(days=serial)
+                    except (ValueError, OverflowError):
+                        pass
+                return datetime(1899, 12, 30) + timedelta(days=serial)
+            except (ValueError, OverflowError, OSError):
                 pass
         return None
 
@@ -469,8 +513,8 @@ def _get_receivable_sheets():
 
     if not os.path.exists(col_map_path):
         col_map_path = os.path.join(
-            os.path.expanduser('~'), '.workbuddy', 'skills',
-            'valuation-detail-table', 'assets', 'sheet_col_map.json'
+            os.path.expanduser('~'), '.codex', 'skills',
+            'valuation-detail-table', 'valuation-detail-table', 'assets', 'sheet_col_map.json'
         )
 
     if not os.path.exists(col_map_path):
@@ -582,10 +626,10 @@ def _load_col_map_for_sheet(sheet_name):
     col_map_path = os.path.join(skill_dir, 'assets', 'sheet_col_map.json')
 
     if not os.path.exists(col_map_path):
-        # 策略2: fallback到旧路径
+        # 策略2: fallback到Codex全局Skill安装路径
         col_map_path = os.path.join(
-            os.path.expanduser('~'), '.workbuddy', 'skills',
-            'valuation-detail-table', 'assets', 'sheet_col_map.json'
+            os.path.expanduser('~'), '.codex', 'skills',
+            'valuation-detail-table', 'valuation-detail-table', 'assets', 'sheet_col_map.json'
         )
     if not os.path.exists(col_map_path):
         return None
@@ -670,7 +714,7 @@ def scan_empty_fields(detail_file_path):
         else:
             # 兜底：动态查找列号（替代"资产类E/D/C、负债类D/E/C"硬编码）
             try:
-                sys.path.insert(0, os.path.expanduser('~/.workbuddy/skills/valuation-common/scripts'))
+                sys.path.insert(0, os.path.expanduser('~/.codex/skills/valuation-detail-table/valuation-common/scripts'))
                 from sheet_col_finder import find_header_cols
                 header_cols_je = find_header_cols(ws)
                 date_col = header_cols_je.get('发生日期')
@@ -731,11 +775,6 @@ def scan_empty_fields(detail_file_path):
             date_empty = date_val is None or date_val == ''
             biz_empty = not biz_str
             biz_generic = biz_str in GENERIC_BIZ_CONTENTS
-            # DT-FIX: 无意义业务内容（单数字/符号/≤2非中文）视为空
-            if not biz_empty and not biz_generic:
-                if len(biz_str) <= 2 and not any('一' <= c <= '鿿' for c in biz_str):
-                    biz_empty = True
-                    biz_generic = False
 
             if date_empty or biz_empty or biz_generic:
                 empty_rows.append({
@@ -912,9 +951,6 @@ def _summarize_from_raw(summaries):
     # DT-175: 如果≤4字，先剥离方向前缀再判断
     if len(shortest) <= 4:
         stripped = _strip_direction(shortest)
-        # DT-FIX: 剥离后仍为数字/符号/过短字符（如"9"），视为无意义摘要
-        if stripped and len(stripped) <= 2 and not any(c.isalpha() for c in stripped):
-            return '往来款'
         return stripped if stripped else '往来款'
 
     # 在标点/空格/连字符处截断
@@ -976,7 +1012,7 @@ def extract_business_contents(extractor, empty_rows, subjects_path=None):
         else:
             # 兜底推断
             try:
-                sys_path = os.path.join(os.path.expanduser('~'), '.workbuddy', 'skills', 'valuation-common', 'scripts')
+                sys_path = os.path.join(os.path.expanduser('~'), '.codex', 'skills', 'valuation-detail-table', 'valuation-common', 'scripts')
                 if sys_path not in sys.path:
                     import sys
                     sys.path.insert(0, sys_path)
@@ -991,6 +1027,11 @@ def extract_business_contents(extractor, empty_rows, subjects_path=None):
         subject_names = {'其他应收款', '其他应付款', '应收账款', '应付账款', '预付款项', '预收款项'}
         if inferred_biz in subject_names:
             inferred_biz = f"{inferred_biz}[待确认业务实质]"
+
+        # DT-149补强：泛化业务词（如"往来款"）不具备审计实质，统一标注待核实。
+        # 这样既不冒充确定值，也不会被G2按“仅填科目名/泛词”直接阻断。
+        if inferred_biz in GENERIC_BIZ_CONTENTS:
+            inferred_biz = f"{inferred_biz}[待核实]"
 
         # 兜底推断标注[待核实]
         if source == 'infer_fallback':

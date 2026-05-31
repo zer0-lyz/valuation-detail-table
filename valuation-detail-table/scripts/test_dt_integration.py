@@ -15,8 +15,8 @@ test_dt_integration.py — DT Skill 集成测试用例
   T9: journal_extractor name_col安全检查
 
 运行方式:
-  cd ~/.workbuddy/skills/valuation-detail-table/scripts
-  python test_dt_integration.py
+  cd ~/.codex/skills/valuation-detail-table
+  python3 valuation-detail-table/scripts/test_dt_integration.py
 """
 
 import os
@@ -34,6 +34,23 @@ SKILL_DIR = SCRIPT_DIR.parent
 COMMON_SCRIPTS = SKILL_DIR.parent / 'valuation-common' / 'scripts'
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(COMMON_SCRIPTS))
+
+
+class TestPhase15NormalizationBridge(unittest.TestCase):
+    """Phase 0前必须自动尝试标准化桥接，并保留降级路径。"""
+
+    def test_financial_normalizer_path_exists(self):
+        from normalize_input import NORMALIZER_PATH
+
+        self.assertTrue(NORMALIZER_PATH.exists(), str(NORMALIZER_PATH))
+
+    def test_phase0_invokes_normalization_before_loading_standardized(self):
+        source = (SCRIPT_DIR / 'dt_runner.py').read_text(encoding='utf-8')
+        phase0_body = source.split('def phase0(project_dir, args):', 1)[1]
+        self.assertLess(
+            phase0_body.index('_run_pre_phase_normalization(project_dir, args)'),
+            phase0_body.index('_load_from_standardized(project_dir, cache_dir)'),
+        )
 
 
 class TestPhase0Settings(unittest.TestCase):

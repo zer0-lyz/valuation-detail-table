@@ -40,9 +40,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
-# financial-normalizer 路径（相对于项目根目录的兄弟路径）
-# Go up: scripts/ -> valuation-detail-table/ -> .../评估明细表填写/ -> financial-normalizer/
-NORMALIZER_PATH = Path(__file__).resolve().parent.parent.parent.parent / 'financial-normalizer'
+# financial-normalizer 路径（相对于当前Skill仓库根目录的兄弟路径）
+# Go up: scripts/ -> valuation-detail-table/ -> Skill仓库根目录/ -> financial-normalizer/
+NORMALIZER_PATH = Path(__file__).resolve().parent.parent.parent / 'financial-normalizer'
 if NORMALIZER_PATH.exists():
     sys.path.insert(0, str(NORMALIZER_PATH))
 else:
@@ -66,7 +66,7 @@ FILE_TYPE_PATTERNS = {
         '序时账', '明细账', '凭证一览表', '日记账', 'journal',
     ],
     'fixed_asset': [
-        '固定资产', '资产台账', '资产卡片', 'fixed asset',
+        '固定资产', '资产台账', '资产卡片', '折旧', 'fixed asset',
     ],
     'income_statement': [
         '利润表', '损益表', 'income statement', '利润及利润分配',

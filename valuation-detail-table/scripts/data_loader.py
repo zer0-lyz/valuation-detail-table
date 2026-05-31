@@ -245,7 +245,10 @@ def _adapt_dedup_keys(data_rows, dedup_key):
     # 建立映射
     key_mapping = {
         'bank_name': 'name',
-        'account_no': 'code',
+        # 注意：银行存款主数据源(subjects.json)常见code都为1002，
+        # 直接映射会把全部明细误去重为1行。account_no优先从name提取账号，
+        # 提取不到时回退到名称本身，确保DT-104逐行展开不被压缩。
+        'account_no': 'name',
     }
 
     for row in data_rows:
@@ -254,6 +257,36 @@ def _adapt_dedup_keys(data_rows, dedup_key):
                 source_key = key_mapping.get(missing_key)
                 if source_key and source_key in row:
                     row[missing_key] = row[source_key]
+
+    # 银行账号字段特殊适配：尽量抽取真实账号，避免同code(1002)被去重合并
+    if 'account_no' in missing_keys:
+        import re
+        for idx, row in enumerate(data_rows, 1):
+            if row.get('account_no'):
+                continue
+            name = str(row.get('name', '') or '').strip()
+            # 先取连续数字串（常见账号）
+            m = re.search(r'(\d{6,})', name)
+            if m:
+                row['account_no'] = m.group(1)
+                continue
+            # 取尾部可能的短账号（如“建行-1234”）
+            m2 = re.search(r'[-_#：:]\s*([A-Za-z0-9]{4,})$', name)
+            if m2:
+                row['account_no'] = m2.group(1)
+                continue
+            # 回退：用名称做去重键，避免全部折叠为1行
+            if name:
+                row['account_no'] = name
+            else:
+                row['account_no'] = f'row_{idx}'
+
+    if 'bank_name' in missing_keys:
+        for row in data_rows:
+            if row.get('bank_name'):
+                continue
+            nm = str(row.get('name', '') or '').strip()
+            row['bank_name'] = nm.split('-', 1)[0].strip() if nm else ''
 
 
 def load_subject_data(sheet_name, cache_dir, schema_path=None):
@@ -376,6 +409,7 @@ def load_subject_data(sheet_name, cache_dir, schema_path=None):
     # Step 4: 去重（DT-156）
     dedup_key = config.get('dedup_key')
     if dedup_key:
+        _adapt_dedup_keys(data_rows, dedup_key)
         before_count = len(data_rows)
         data_rows = dedup_data(data_rows, dedup_key, config.get('dedup_strategy', 'keep_first'))
         load_report['dedup_removed'] = before_count - len(data_rows)
@@ -553,18 +587,26 @@ def _filter_data(raw_data, config, source_file, cache_dir):
         elif prefix is None:
             prefix = []
 
+        # r9: 如果配置了skip_sub_accounts，跳过子科目过滤（直接取父科目）
+        _skip_sub = config.get('skip_sub_accounts', False)
         # BUG-5修复：排除所有非末级行（汇总行和中间节点）
         # 规则1：子编码检测 — 如果有更长的子code以当前code开头，则为父级
         # 规则2：同一code多行检测 — 同一code出现多次时，第一次出现是汇总行（辅助核算格式）
         all_codes = sorted(str(s.get('code', '')) for s in subjects)
         codes_with_children = set()
+        if _skip_sub:
+            # skip_sub_accounts模式：跳过BUG-5父科目过滤，只保留编码最短的父科目
+            _min_len = min(len(c) for c in all_codes) if all_codes else 0
+            codes_with_children = {c for c in all_codes if len(c) > _min_len}
         
-        # 规则1: 子编码检测（如 1122 → 112201）
-        for i, code in enumerate(all_codes):
-            for j in range(i + 1, len(all_codes)):
-                if all_codes[j].startswith(code) and all_codes[j] != code:
-                    codes_with_children.add(code)
-                    break
+        # r9: skip_sub_accounts已处理子科目过滤，跳过规则1
+        if not _skip_sub:
+            # 规则1: 子编码检测（如 1122 → 112201）
+            for i, code in enumerate(all_codes):
+                for j in range(i + 1, len(all_codes)):
+                    if all_codes[j].startswith(code) and all_codes[j] != code:
+                        codes_with_children.add(code)
+                        break
         
         # 规则2: 同一code多行检测（辅助核算格式：code相同但名称不同）
         # 同一code多行时，跳过名称不含'*'或'　'的行（汇总行），保留明细行
@@ -773,7 +815,8 @@ def _filter_secondary(secondary_data, config):
                     # 对于像'100201'这种6位编码，比'1002'长，说明是末级
                     # 对于'1122_01.004'这种辅助核算编码，比'1122'长，说明是末级
                     if is_leaf or '_' in code:
-                        balance = s.get('balance', 0)
+                        # 字段优先级固定：s.get('balance', s.get('closing_balance', 0))
+                        balance = s.get('balance', s.get('closing_balance', 0))
                         direction = s.get('direction', s.get('closing_direction', ''))
                         rows.append({
                             'code': code,
@@ -1028,13 +1071,13 @@ def load_journal_data(journal_path, project_dir=None):
         elif isinstance(date_val, str):
             for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d', '%Y年%m月%d日']:
                 try:
-                    dt = datetime.strptime(date_val.strip()[:10], fmt[:8] if '年' in fmt else fmt)
+                    dt = datetime.strptime(date_val.strip(), fmt)
                     break
                 except ValueError:
                     continue
         elif isinstance(date_val, (int, float)):
             try:
-                dt = datetime(1899, 12, 30) + timedelta(days=int(date_val))
+                dt = datetime(1899, 12, 30) + timedelta(days=float(date_val))
             except:
                 pass
 
