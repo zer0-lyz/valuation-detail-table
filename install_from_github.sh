@@ -7,7 +7,7 @@ set -e
 
 REPO_URL="https://github.com/zer0-lyz/valuation-detail-table.git"
 SKILL_DIR="$HOME/.codex/skills/valuation-detail-table"
-EXPECTED_VERSION="v0.2.2"
+EXPECTED_VERSION="v3.69"
 
 # 1) 准备目录
 mkdir -p "$(dirname "$SKILL_DIR")"
