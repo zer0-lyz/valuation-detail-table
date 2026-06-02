@@ -61,7 +61,21 @@ SOURCE_HEADER_KEYWORDS = {
         # 字段映射：标准字段名 → 关键词候选列表（按优先级）
         # 注意：双行表头合并后会产生如"期初余额借方""期末余额贷方"等组合列名
         'code':            ['科目编码', '科目代码', '科目号', '科目编号', '编码'],
-        'name':            ['科目名称', '名称'],
+        'name':            ['科目名称'],  # v0.2: 不再 fallback 到 "名称"，避免匹配"企业主体名称"等
+        # v0.2: entity_name 独立识别
+        'entity_name':     ['企业主体名称', '主体名称', '公司名称'],
+        'query_period':    ['查询区间'],
+        # v0.2 (2026-06-01): 中汇查账系统 16 列布局 — 期初/期末合一列+方向列
+        'opening_balance': ['本位币期初', '期初余额', '年初余额'],
+        'closing_balance': ['本位币期末', '期末余额', '年末余额'],
+        # v0.2 (2026-06-01): 中汇查账系统 16 列布局 — 辅助核算三件套
+        'auxiliary_type':  ['核算类型', '辅助核算类型', '类别'],
+        'auxiliary_code':  ['核算编号', '辅助核算编号', '客户编号', '供应商编号', '客商编号'],
+        'auxiliary_name':  ['核算名称', '辅助核算名称', '客户名称', '供应商名称', '客商名称', '单位名称'],
+        'data_type':       ['数据类型', '数据种类', '币种类型'],
+        'account_full_path': ['科目全路径', '科目路径', '全路径'],
+        'pnl_carryover':   ['损益结转金额', '损益结转', '结转损益'],
+        'standard_level1': ['标准1级科目', '标准一级科目', '1级科目'],
         'direction':       ['余额方向', '方向', '借贷方向'],
         'beginning_debit': ['期初余额借方', '年初借方', '期初借方余额', '期初借方发生额', '期初借方', '期初借方金额', '期初余额金额', '余额金额'],
         'beginning_credit':['期初余额贷方', '年初贷方', '期初贷方余额', '期初贷方发生额', '期初贷方', '期初贷方金额', '期初余额金额', '余额金额'],
@@ -95,19 +109,33 @@ SOURCE_HEADER_KEYWORDS = {
     # 3. 序时账/凭证一览表 (journal)
     # ----------------------------------------------------------
     'journal': {
-        '_detect': ['凭证', '摘要', '借贷', '序时账', '明细账', '日记账'],
+        '_detect': ['凭证', '摘要', '借贷', '序时账', '明细账', '日记账', '企业主体名称'],
         'date':            ['日期', '记账日期', '凭证日期', '发生日期', '业务日期'],
         'voucher_no':      ['凭证号', '凭证编号', '凭证字号', '凭证字', '凭证'],
         'summary':         ['摘要', '内容', '业务摘要', '说明'],
-        'code':            ['科目编码', '科目代码', '科目号', '科目编号', '编码'],
-        'name':            ['科目名称', '科目', '名称'],
-        'debit':           ['借方', '借方金额', '借方发生额', '借'],
-        'credit':          ['贷方', '贷方金额', '贷方发生额', '贷'],
-        'balance':         ['余额', '余额方向', '当前余额'],
+        'code':            ['科目编码', '科目代码', '科目号', '科目编号', '编码', '末级科目编号'],
+        'name':            ['科目名称', '科目', '名称', '末级科目全路径'],
+        'debit':           ['借方', '借方金额', '借方发生额', '借', '本位币借方'],
+        'credit':          ['贷方', '贷方金额', '贷方发生额', '贷', '本位币贷方'],
+        'balance':         ['余额', '余额方向', '当前余额', '本位币余额'],
         'direction':       ['方向', '借贷方向', '借/贷'],
         'counterpart':     ['对方科目', '对应科目', '对方', '对应'],
         'aux_accounting':  ['辅助核算', '辅助', '核算项目', '辅助项'],
-        'settlement':      ['结算对象', '结算', '客商', '往来单位', '对方单位'],
+        'settlement':      ['结算对象', '结算', '客商', '往来单位', '对方单位',
+                            '往来单位名称', '客户名称', '供应商名称', '客商名称'],
+        # v0.2: 50 列布局扩展字段
+        'voucher_type':    ['字', '凭证字', '凭证类别字'],
+        'voucher_number':  ['号', '凭证号数', '凭证序号'],
+        'entity_name':     ['企业主体名称', '主体名称', '公司名称'],
+        'counter_account': ['对方科目', '对方科目全路径'],
+        'other_account':   ['本方其他科目'],
+        'subject_full_path': ['末级科目全路径'],
+        'customer_supplier_name': ['往来单位名称', '客户名称', '供应商名称'],
+        'counter_customer_supplier': ['对方往来单位名称'],
+        'bank_account_name': ['银行账号名称', '开户行'],
+        'department_name': ['部门名称', '部门'],
+        'project_name':    ['项目名称', '项目'],
+        'allocation_type': ['结转分配类型', '结转类型'],
         'quantity':        ['数量', '数量单位'],
         'unit':            ['单位', '计量单位'],
     },
@@ -610,6 +638,16 @@ def parse_subject_balance(filepath: str) -> Dict[str, Any]:
         current_debit_col = col_map.get('current_debit')
         current_credit_col = col_map.get('current_credit')
         level_col = col_map.get('level')
+        # v0.2: 中汇查账系统 16 列布局的辅助核算三件套 + 合一期初/期末
+        aux_type_col = col_map.get('auxiliary_type')
+        aux_code_col = col_map.get('auxiliary_code')
+        aux_name_col = col_map.get('auxiliary_name')
+        data_type_col = col_map.get('data_type')
+        account_full_path_col = col_map.get('account_full_path')
+        pnl_carryover_col = col_map.get('pnl_carryover')
+        standard_level1_col = col_map.get('standard_level1')
+        opening_balance_col = col_map.get('opening_balance')
+        closing_balance_col = col_map.get('closing_balance')
 
         for row in range(header_row + 1, ws.max_row + 1):
             code = ws.cell(row, code_col).value
@@ -624,11 +662,44 @@ def parse_subject_balance(filepath: str) -> Dict[str, Any]:
             if '合计' in name or '小计' in name:
                 continue
 
+            # v0.2: 提取辅助核算三件套
+            aux_type = ''
+            aux_code = ''
+            aux_name = ''
+            if aux_type_col:
+                _v = ws.cell(row, aux_type_col).value
+                if _v: aux_type = str(_v).strip()
+            if aux_code_col:
+                _v = ws.cell(row, aux_code_col).value
+                if _v: aux_code = str(_v).strip()
+            if aux_name_col:
+                _v = ws.cell(row, aux_name_col).value
+                if _v: aux_name = str(_v).strip()
+            data_type = ''
+            if data_type_col:
+                _v = ws.cell(row, data_type_col).value
+                if _v: data_type = str(_v).strip()
+            account_full_path = ''
+            if account_full_path_col:
+                _v = ws.cell(row, account_full_path_col).value
+                if _v: account_full_path = str(_v).strip()
+            standard_level1 = ''
+            if standard_level1_col:
+                _v = ws.cell(row, standard_level1_col).value
+                if _v: standard_level1 = str(_v).strip()
+            pnl_carryover = 0.0
+            if pnl_carryover_col:
+                pnl_carryover = _safe_float(ws.cell(row, pnl_carryover_col).value)
+
             # 余额逻辑：优先期末余额单列，其次借方/贷方分列
             balance = 0.0
             direction = ''
 
             _balance_src_col = balance_col
+            # v0.2: 中汇查账系统 16 列布局 — "本位币期初/期末" 是合一列
+            # 如果balance_col未识别到，但有closing_balance_col，用closing_balance
+            if not _balance_src_col and closing_balance_col:
+                _balance_src_col = closing_balance_col
             # DT-FIX: 阳江晶步格式——期末余额/原币(Col17,空)+/本币(Col18,有值)
             # 如果balance_col指向原币列且下一列是"本币"，自动切换
             if balance_col and balance_col < ws.max_column:
@@ -731,6 +802,29 @@ def parse_subject_balance(filepath: str) -> Dict[str, Any]:
                 lv = ws.cell(row, level_col).value
                 if lv:
                     subjects_item['level'] = int(lv)
+
+            # v0.2: 保存辅助核算三件套 + 路径/重分类字段
+            if account_full_path:
+                subjects_item['account_full_path'] = account_full_path
+            if standard_level1:
+                subjects_item['standard_level1'] = standard_level1
+            if data_type:
+                subjects_item['data_type'] = data_type
+            if opening_balance_col:
+                _op = _safe_float(ws.cell(row, opening_balance_col).value) if opening_balance_col else 0.0
+                subjects_item['opening_balance'] = _op
+            if pnl_carryover_col:
+                subjects_item['pnl_carryover'] = pnl_carryover
+            # 辅助核算三件套 — 关键字段：Phase 2 用作 结算对象
+            if aux_type or aux_code or aux_name:
+                subjects_item['auxiliary_type'] = aux_type
+                subjects_item['auxiliary_code'] = aux_code
+                subjects_item['auxiliary_name'] = aux_name
+                # 关键：往来科目时（客商/客户/供应商），aux_name 应作为"结算对象"使用
+                if aux_name and aux_type in ('客商', '客户', '供应商', '个人'):
+                    subjects_item['counterparty'] = aux_name
+                elif aux_name:
+                    subjects_item['counterparty'] = aux_name
 
             result['subjects'].append(subjects_item)
 

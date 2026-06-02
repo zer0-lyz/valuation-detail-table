@@ -1231,8 +1231,9 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
             continue
         ws = wb[sname]
         for row in ws.iter_rows(min_row=6, max_row=65, values_only=False):
-            name = row[2].value
-            bv = row[3].value
+            # 修正: 2-分类汇总 schema: B=序号 C=项目编号 D=科目名称 E=账面价值
+            name = row[3].value
+            bv = row[4].value
             if name and bv is not None and isinstance(bv, (int, float)) and abs(bv) > 0.01:
                 dt_summary[str(name).strip()] = bv
     
@@ -2345,6 +2346,9 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
 
                         # 检查是否有金额数据（DT-153: 从col_map读取账面价值列号）
                         amt = ws.cell(row=r, column=bv_col).value
+                        # G2-18 v3.9.2 修复: 跳过公式占位(空 Sheet 的 =SUM(...) 视为无数据)
+                        if isinstance(amt, str) and amt.startswith('='):
+                            continue
                         if not amt or (isinstance(amt, (int, float)) and amt == 0):
                             continue
 
@@ -2551,7 +2555,8 @@ def gate_G2(filepath, bs_path=None, sb_path=None, has_journal=False):
                 })
 
         # ---- G2-19.5: 合计2行A列标记+B列内容（如存在合计2行）----
-        if tr2 and tr2 > bdr:
+        # 注:bdr(坏账准备行)可能为 None,需显式判空
+        if tr2 and bdr and tr2 > bdr:
             a_val_tr2 = ws.cell(row=tr2, column=1).value
             a_text_tr2 = str(a_val_tr2).replace(' ', '').strip() if a_val_tr2 else ''
             if '合计' not in a_text_tr2 and '合' not in a_text_tr2:
@@ -2692,11 +2697,32 @@ def gate_G3(filepath, bs_path=None, tolerance=0.01):
             continue
         ws = wb[sname]
         for row in ws.iter_rows(min_row=6, max_row=65, values_only=False):
-            name = row[2].value
-            bv = row[3].value
+            # 修正: 2-分类汇总 schema: B=序号 C=项目编号 D=科目名称 E=账面价值
+            name = row[3].value
+            bv = row[4].value
             if name and bv is not None and isinstance(bv, (int, float)):
                 dt_summary[str(name).strip()] = bv
-    
+
+    # ---- G3-1 公式降级:扫描 2-分类汇总 的 账面价值列,识别公式单元 ----
+    # 当 E 列是公式( =xxx)时,openpyxl data_only=True 读不到缓存,
+    # 会判 None,从而 G3-1 报 "BS有值但DT分类汇总中无对应值" 误报。
+    # 这里预先用 data_only=False 打开,记录 name→formula 映射,G3-1 时降级为 WARNING。
+    dt_formula_names = set()
+    try:
+        wb_formula_g31 = openpyxl.load_workbook(filepath, data_only=False)
+        for sname in wb_formula_g31.sheetnames:
+            if '分类汇总' not in sname:
+                continue
+            ws_f = wb_formula_g31[sname]
+            for row in ws_f.iter_rows(min_row=6, max_row=65, values_only=False):
+                name = row[3].value
+                bv = row[4].value
+                if name and isinstance(bv, str) and bv.startswith('='):
+                    dt_formula_names.add(str(name).strip())
+        wb_formula_g31.close()
+    except Exception:
+        pass
+
     # 读取BS
     bs_summary = {}
     if bs_path:
@@ -2770,15 +2796,25 @@ def gate_G3(filepath, bs_path=None, tolerance=0.01):
         elif dt_val is None and bs_val is not None and abs(bs_val) > tolerance:
             # 已知重分类项降级为WARNING
             is_reclass = acct in BS_RECLASS_ITEMS
+            # 公式降级:如果该 name 在 2-分类汇总 中是公式(=xxx),
+            # openpyxl data_only 读不到缓存视为 None,实为公式缓存未计算(非漏填),
+            # 与 G3-6 降级逻辑一致。
+            is_formula = acct in dt_formula_names
+            severity = 'WARNING' if (is_reclass or is_formula) else 'CRITICAL'
+            notes = []
+            if is_reclass:
+                notes.append(f'已知重分类: {KNOWN_RECLASSIFICATIONS[acct]}')
+            if is_formula:
+                notes.append('2-分类汇总 E 列为公式,data_only 缓存为 None(非漏填),需在有公式引擎环境重算后复核')
+            note_str = (' ← ' + '; '.join(notes)) if notes else ''
             violations.append({
                 'gate': 'G3-1',
                 'rule': 'DT-4',
-                'severity': 'WARNING' if is_reclass else 'CRITICAL',
+                'severity': severity,
                 'sheet': '2-分类汇总',
                 'cell': 'N/A',
                 'value': bs_val,
-                'message': f'科目"{acct}"BS有值{bs_val:,.2f}但DT分类汇总中无对应值→漏填或公式缓存为0' +
-                          (f' ← 已知重分类: {KNOWN_RECLASSIFICATIONS[acct]}' if is_reclass else '')
+                'message': f'科目"{acct}"BS有值{bs_val:,.2f}但DT分类汇总中无对应值→漏填或公式缓存为0{note_str}'
             })
     
     # 总量勾稽

@@ -112,7 +112,10 @@ python3 scripts/validate_skill.py
 
 ## 版本
 
-v3.66
+v0.2.2 (2026-06-02)
+
+> 升级说明: v3.66 → v0.2.2 跳号,从 v3.x 体系切换到 v0.2.x 子版本体系。
+> v0.2.0 字段体系升级 / v0.2.1 序时账配套 / v0.2.2 G3 公式缓存降级 — 详见 [CHANGELOG.md](valuation-detail-table/CHANGELOG.md)。
 
 ## 相关文件
 

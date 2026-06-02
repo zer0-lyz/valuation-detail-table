@@ -103,6 +103,12 @@ class JournalExtractor:
                     'debit': 'debit',
                     'credit': 'credit',
                     'aux_accounting': 'aux_accounting',
+                    # v0.2 (2026-06-01): 50 列布局 — 往来单位名称作为结算对象
+                    'customer_supplier_name': 'settlement',
+                    'department_name': 'department',
+                    'project_name': 'project',
+                    'bank_account_name': 'bank_account',
+                    'subject_full_path': 'subject_full_path',
                 }
                 for shp_key, je_key in key_map.items():
                     if shp_key in col_map:
@@ -172,6 +178,11 @@ class JournalExtractor:
         # 兼容"方向+金额"格式（如用友/金蝶序时账）：根据方向列将金额分配到借方或贷方
         use_direction_amount = bool(direction_col and amount_col and not debit_col)
         aux_col = self.col_map.get('aux_accounting')  # 辅助核算列（动态检测，可能不存在）
+        # v0.2 (2026-06-01): 50 列布局 — 显式读取往来/银行/部门/项目等辅助核算列
+        settlement_col = self.col_map.get('settlement')
+        bank_account_col = self.col_map.get('bank_account')
+        department_col = self.col_map.get('department')
+        project_col = self.col_map.get('project')
 
         # 第一遍扫描：收集所有行数据（包括date=None的行）
         # DT-209: 日期回填策略——同凭证号（voucher_col）的行共享首行日期
@@ -199,6 +210,11 @@ class JournalExtractor:
                 debit = ws.cell(row=r, column=debit_col).value if debit_col else 0
                 credit = ws.cell(row=r, column=credit_col).value if credit_col else 0
             aux_val = ws.cell(row=r, column=aux_col).value if aux_col else None
+            # v0.2 (2026-06-01): 50 列布局显式读取
+            settlement_val = ws.cell(row=r, column=settlement_col).value if settlement_col else None
+            bank_account_val = ws.cell(row=r, column=bank_account_col).value if bank_account_col else None
+            department_val = ws.cell(row=r, column=department_col).value if department_col else None
+            project_val = ws.cell(row=r, column=project_col).value if project_col else None
 
             dt = self._parse_date(date_val, cell=ws.cell(row=r, column=date_col))
             voucher_val = ws.cell(row=r, column=voucher_col).value if voucher_col else None
@@ -228,6 +244,12 @@ class JournalExtractor:
                 # 从辅助核算字段提取结算对象名称
                 settlement_from_aux = self._extract_settlement_from_aux(aux_val)
 
+                # v0.2 (2026-06-01): 优先使用显式 settlement 列，否则从 aux 提取
+                settlement_name = ''
+                if settlement_val and str(settlement_val).strip() and str(settlement_val).strip() not in ('nan', 'None', ''):
+                    settlement_name = str(settlement_val).strip()
+                if not settlement_name and settlement_from_aux:
+                    settlement_name = settlement_from_aux
                 self.data.append({
                     'row': r,
                     'date': effective_date,
@@ -238,6 +260,10 @@ class JournalExtractor:
                     'credit': float(credit) if credit and isinstance(credit, (int, float)) else self._safe_float(credit),
                     'aux_accounting': str(aux_val).strip() if aux_val else '',
                     'settlement_from_aux': settlement_from_aux,
+                    'customer_supplier': settlement_name,  # v0.2: 往来单位名称
+                    'department': str(department_val).strip() if department_val and str(department_val).strip() not in ('nan', 'None') else '',
+                    'project': str(project_val).strip() if project_val and str(project_val).strip() not in ('nan', 'None') else '',
+                    'bank_account': str(bank_account_val).strip() if bank_account_val and str(bank_account_val).strip() not in ('nan', 'None') else '',
                 })
 
         self.row_count = len(self.data)
@@ -343,17 +369,24 @@ class JournalExtractor:
                     break
 
         # v1.1降级策略1：科目名称0命中→用摘要关键词+辅助核算在全部数据中搜索
+        # v3.68 (2026-06-02): 如果L2已用settlement关键词搜索且0命中,标记_skip_l3
+        # 避免L3科目编码前缀匹配把 settlement_name 过滤掉,导致错返回大量错误条目
+        _skip_l3 = False
         if not filtered and fuzzy_fallback and summary_keywords:
             for s in self.data:
                 for kw in summary_keywords:
+                    # v0.2 (2026-06-01): 增加 customer_supplier 字段（往来单位名称）
                     if kw and (kw in s['summary'] or
                                kw in s.get('aux_accounting', '') or
-                               kw in s.get('settlement_from_aux', '')):
+                               kw in s.get('settlement_from_aux', '') or
+                               kw in s.get('customer_supplier', '')):
                         filtered.append(s)
                         break
+            if not filtered:
+                _skip_l3 = True  # 结算对象无匹配,不再降级到科目前缀
 
-        # v1.1降级策略2：摘要也0命中→用科目编码前缀匹配
-        if not filtered and fuzzy_fallback and subject_keywords:
+        # v1.1降级策略2：摘要也0命中→用科目编码前缀匹配（仅在未指定结算对象关键词时使用）
+        if not filtered and not _skip_l3 and fuzzy_fallback and subject_keywords:
             for s in self.data:
                 for kw in subject_keywords:
                     # 科目编码前缀匹配（如"1122"匹配"112201"）
@@ -817,15 +850,26 @@ def extract_dates(extractor, empty_rows, subjects_path=None):
         name = row['name']
         subject_code = row['subject_code']
 
-        # 泛匹配检测（DT-52）
+        # 泛匹配检测（DT-52）— v3.68 也尝试用父科目降级，避免G2阻断
         if name in ('其他', '其他个人', '个人', '往来', '其他往来', '备用金'):
-            results.append({
-                **row,
-                'status': 'generic_skip',
-                'verified_date': None,
-                'match_count': 0,
-                'note': 'DT-52泛匹配项，跳过自动核实',
-            })
+            fallback = extractor.query_by_subject([subject_code], None, None)
+            if fallback:
+                fallback.sort(key=lambda x: x['date'])
+                results.append({
+                    **row,
+                    'status': 'fallback_parent',
+                    'verified_date': fallback[-1]['date'],
+                    'match_count': 0,
+                    'note': f'DT-52泛匹配+父科目降级: {fallback[-1]["date"].strftime("%Y-%m-%d")}',
+                })
+            else:
+                results.append({
+                    **row,
+                    'status': 'generic_skip',
+                    'verified_date': None,
+                    'match_count': 0,
+                    'note': 'DT-52泛匹配项，跳过自动核实',
+                })
             continue
 
         # 查询序时账（不限方向，取末笔发生日期）
@@ -852,13 +896,27 @@ def extract_dates(extractor, empty_rows, subjects_path=None):
                 'note': f"匹配歧义({result['match_count']}条)，跳过自动核实",
             })
         else:
-            results.append({
-                **row,
-                'status': 'no_match',
-                'verified_date': None,
-                'match_count': 0,
-                'note': '序时账中未找到匹配',
-            })
+            # v3.68 (2026-06-02): 父科目降级 — 用该科目最近一笔同方向发生日期兜底
+            fallback = extractor.query_by_subject([subject_code], None, None)
+            if fallback:
+                fallback.sort(key=lambda x: x['date'])
+                fallback_date = fallback[-1]['date']
+                results.append({
+                    **row,
+                    'status': 'fallback_parent',
+                    'verified_date': fallback_date,
+                    'match_count': 0,
+                    'note': f'父科目降级: 最近日期 {fallback_date.strftime("%Y-%m-%d")}, '
+                            f'该结算对象无独立序时账记录',
+                })
+            else:
+                results.append({
+                    **row,
+                    'status': 'no_match',
+                    'verified_date': None,
+                    'match_count': 0,
+                    'note': '序时账中未找到匹配',
+                })
 
     return results
 
@@ -1059,7 +1117,8 @@ def write_phase3_results(detail_file_path, date_results, biz_results):
     # 写入发生日期
     date_written = 0
     for r in date_results:
-        if r.get('status') != 'verified' or not r.get('verified_date'):
+        # v3.68 (2026-06-02): 接受 verified 和 fallback_parent 两种状态
+        if r.get('status') not in ('verified', 'fallback_parent') or not r.get('verified_date'):
             continue
         if r['sheet'] not in wb.sheetnames:
             continue
@@ -1174,8 +1233,10 @@ def generate_phase3_report(date_results, biz_results):
     date_no_match = sum(1 for r in date_results if r.get('status') == 'no_match')
     date_ambiguous = sum(1 for r in date_results if r.get('status') == 'ambiguous')
     date_generic = sum(1 for r in date_results if r.get('status') == 'generic_skip')
+    date_fallback = sum(1 for r in date_results if r.get('status') == 'fallback_parent')
 
     lines.append(f"  已核实: {date_verified}行")
+    lines.append(f"  父科目降级: {date_fallback}行 (v3.68)")
     lines.append(f"  未匹配: {date_no_match}行 → [待核实]")
     lines.append(f"  匹配歧义: {date_ambiguous}行 → [待核实]")
     lines.append(f"  泛匹配跳过(DT-52): {date_generic}行")

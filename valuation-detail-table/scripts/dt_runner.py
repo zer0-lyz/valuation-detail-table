@@ -406,8 +406,7 @@ def _load_from_standardized(project_dir, cache_dir):
         dict: 包含subjects, bs_balances, d1d2d3等所有缓存所需的原始数据
         如果标准化文件不存在或加载失败，返回None
     """
-    import openpyxl
-    from openpyxl.workbook.properties import CalcProperties as _opx
+    from openpyxl import load_workbook as _opx_load
     std_path = os.path.join(project_dir, '标准化财务数据汇总.xlsx')
     if not os.path.exists(std_path):
         return None
@@ -416,7 +415,7 @@ def _load_from_standardized(project_dir, cache_dir):
     print(f'  文件: {std_path}')
     
     try:
-        wb = _opx.load_workbook(std_path, data_only=True)
+        wb = _opx_load(std_path, data_only=True)
     except Exception as e:
         print(f'  ⚠️ 无法打开标准化文件: {e}')
         return None
@@ -454,9 +453,28 @@ def _load_from_standardized(project_dir, cache_dir):
             except (ValueError, TypeError):
                 level = len(code)
             
+            # v3.67 (2026-06-01): 读取辅助核算三件套 (cols 8/9/10) + 路径/重分类 (11/12/13/14/15)
+            aux_type = ws.cell(row=r, column=8).value
+            aux_code = ws.cell(row=r, column=9).value
+            aux_name = ws.cell(row=r, column=10).value
+            account_full_path = ws.cell(row=r, column=11).value
+            standard_level1 = ws.cell(row=r, column=12).value
+            data_type = ws.cell(row=r, column=13).value
+            try:
+                opening_balance = float(ws.cell(row=r, column=14).value or 0)
+            except (ValueError, TypeError):
+                opening_balance = 0.0
+            try:
+                pnl_carryover = float(ws.cell(row=r, column=15).value or 0)
+            except (ValueError, TypeError):
+                pnl_carryover = 0.0
+            aux_name_str = str(aux_name).strip() if aux_name and str(aux_name).strip() not in ('nan', 'None') else ''
+            aux_type_str = str(aux_type).strip() if aux_type and str(aux_type).strip() not in ('nan', 'None') else ''
+            entry_name = aux_name_str if aux_name_str else (str(name).strip() if name else '')
+
             subjects.append({
                 'code': code,
-                'name': str(name).strip() if name else '',
+                'name': entry_name,
                 'balance': balance,
                 'direction': str(direction).strip() if direction else '借',
                 'level': level,
@@ -468,8 +486,17 @@ def _load_from_standardized(project_dir, cache_dir):
                 'ending_debit': balance if (direction and str(direction).strip() == '借') else 0.0,
                 'ending_credit': abs(balance) if (direction and str(direction).strip() == '贷') else 0.0,
                 'closing_balance': balance,
+                'opening_balance': opening_balance,
+                'pnl_carryover': pnl_carryover,
                 '_sheet_code': str(sheet_code).strip() if sheet_code else '',
                 '_sheet_name': str(sheet_name).strip() if sheet_name else '',
+                'auxiliary_type': aux_type_str,
+                'auxiliary_code': str(aux_code).strip() if aux_code and str(aux_code).strip() not in ('nan', 'None') else '',
+                'auxiliary_name': aux_name_str,
+                'counterparty': aux_name_str,
+                'account_full_path': str(account_full_path).strip() if account_full_path and str(account_full_path).strip() not in ('nan', 'None') else '',
+                'standard_level1': str(standard_level1).strip() if standard_level1 and str(standard_level1).strip() not in ('nan', 'None') else '',
+                'data_type': str(data_type).strip() if data_type and str(data_type).strip() not in ('nan', 'None') else '',
             })
         
         result['subjects'] = subjects
@@ -609,6 +636,11 @@ def _load_from_standardized(project_dir, cache_dir):
             except (ValueError, TypeError):
                 credit = 0.0
             
+            # v3.67 (2026-06-01): 读取新增的往来单位/部门/项目/银行账号列
+            customer_supplier = ws.cell(row=r, column=8).value
+            department = ws.cell(row=r, column=9).value
+            project = ws.cell(row=r, column=10).value
+            bank_account = ws.cell(row=r, column=11).value
             journal.append({
                 'date': str(date).strip() if date else '',
                 'voucher_no': str(voucher).strip() if voucher else '',
@@ -617,6 +649,10 @@ def _load_from_standardized(project_dir, cache_dir):
                 'summary': str(summary).strip() if summary else '',
                 'debit_amount': debit,
                 'credit_amount': credit,
+                'customer_supplier': str(customer_supplier).strip() if customer_supplier and str(customer_supplier).strip() not in ('nan', 'None') else '',
+                'department': str(department).strip() if department and str(department).strip() not in ('nan', 'None') else '',
+                'project': str(project).strip() if project and str(project).strip() not in ('nan', 'None') else '',
+                'bank_account': str(bank_account).strip() if bank_account and str(bank_account).strip() not in ('nan', 'None') else '',
             })
         result['journal'] = journal
         print(f'  序时账: {len(journal)}行 → journal.json')
@@ -713,6 +749,14 @@ def _build_mapping_from_standardized(bs_balances, subjects):
         '应收款项融资': ['1126'],
         '交易性金融资产': ['1101'],
         '交易性金融负债': ['2101'],
+        # v3.68 (2026-06-01): 补充某测试项目缺失的 7 个 BS 科目映射
+        '长期股权投资': ['1511'],
+        '投资性房地产': ['1521'],
+        '其他非流动金融资产': ['1813'],
+        '其他非流动资产': ['1812'],
+        '专项应付款': ['2711'],
+        '一年内到期的非流动负债': ['2701', '2501', '2901'],
+        '其他流动资产': ['122199', '224103'],
     }
     
     # Build D1→D2 from BS items
@@ -793,9 +837,20 @@ def _extract_settings_from_std(subjects, bs_balances, project_dir):
                     for _c in range(1, min(_ws_bs.max_column + 1, 10)):
                         _v = str(_ws_bs.cell(row=_r, column=_c).value or '')
                         import re as _re_bs
-                        _date_match = _re_bs.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', _v)
+                        _date_match = _re_bs.search(r'\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?', _v)
                         if _date_match:
                             _date_str = _date_match.group().replace('/', '-')
+                            # 如果只有年-月(没有日),补 day=01 → 2025-07-31(月末)更符合基准日惯例
+                            if _re_bs.match(r'\d{4}[-/]\d{1,2}$', _date_str):
+                                # 推断为月末
+                                _y, _m = _date_str.split('-')[:2]
+                                _m_int = int(_m)
+                                if _m_int == 12:
+                                    _date_str = f'{_y}-{_m_int}-31'
+                                else:
+                                    import calendar as _cal
+                                    _last_day = _cal.monthrange(int(_y), _m_int)[1]
+                                    _date_str = f'{_y}-{_m_int}-{_last_day}'
                             settings['valuation_date'] = _date_str
                             break
                     if settings['valuation_date']:
@@ -996,7 +1051,15 @@ def phase0(project_dir, args):
                 'candidate_targets': [],
                 'evidence': ['settings_info.json.valuation_date'],
             })
+        # v3.67 (2026-06-01) 兼容:如果 mapping_overrides.use_tb_zero 标记了某些 BS 标签,
+        # 自动确认这些项为"科目余额表=0",不写入 pending 清单
+        overrides = _load_cache(cache_dir, 'mapping_overrides.json') or {}
+        use_tb_zero = set((overrides.get('use_tb_zero') or []) if isinstance(overrides, dict) else [])
         for label in d1d2d3.get('unmapped_bs_items', []):
+            if label in use_tb_zero:
+                # 自动确认:该 BS 项在科目余额表中无对应科目,余额=0
+                print(f'  [AUTO-CONFIRM] BS 项 "{label}" → 科目余额表=0 (mapping_overrides.use_tb_zero)')
+                continue
             pending_items.append({
                 'id': f'MAP-BS-{len(pending_items)+1:03d}',
                 'type': 'subject_mapping',
@@ -1563,6 +1626,14 @@ def _build_d1d2d3_mapping(bs_data, subjects):
         '应收款项融资': ['1126'],
         '交易性金融资产': ['1101'],
         '交易性金融负债': ['2101'],
+        # v3.68 (2026-06-01): 补充某测试项目缺失的 7 个 BS 科目映射
+        '长期股权投资': ['1511'],
+        '投资性房地产': ['1521'],
+        '其他非流动金融资产': ['1813'],
+        '其他非流动资产': ['1812'],
+        '专项应付款': ['2711'],
+        '一年内到期的非流动负债': ['2701', '2501', '2901'],
+        '其他流动资产': ['122199', '224103'],
     }
 
     def _is_summary_label(text):
@@ -3578,9 +3649,13 @@ class _StandardizedJournalWrapper:
         """从 journal.json 缓存构建
         
         Args:
-            journal_data: list[dict], 来自 journal.json
-                格式: {date, voucher_no, subject_code, subject_name, 
-                       summary, debit_amount, credit_amount}
+            journal_data: list[dict], 来自 journal.json / journal_normalized.json
+                标准格式: {date, voucher_no, subject_code, subject_name,
+                           summary, debit_amount, credit_amount,
+                           customer_supplier, department, project, bank_account}
+                兼容旧格式: {date, voucher_no, account_code, account_name,
+                             summary, debit_amount, credit_amount,
+                             customer_supplier, department, project_name, personnel}
         """
         from datetime import datetime, timedelta
         import re as _re
@@ -3588,8 +3663,10 @@ class _StandardizedJournalWrapper:
         for row in journal_data:
             # 标准化日期格式
             raw_date = row.get('date', '')
-            subject_code = str(row.get('subject_code', '')).strip()
-            subject_name = str(row.get('subject_name', '')).strip()
+            # v3.68 (2026-06-02): 兼容 account_code/account_name 字段名
+            # (journal_normalized.json 用的就是这种命名)
+            subject_code = str(row.get('subject_code') or row.get('account_code') or '').strip()
+            subject_name = str(row.get('subject_name') or row.get('account_name') or '').strip()
             summary = str(row.get('summary', '')).strip()
             
             try:
@@ -3632,6 +3709,20 @@ class _StandardizedJournalWrapper:
                         except Exception:
                             parsed_date = None
             
+            # v3.68 (2026-06-02): 读取 customer_supplier/department/project/project_name/bank_account
+            # 兼容: project_name (标准化格式) 和 project (旧格式)
+            cust = str(row.get('customer_supplier', '') or '').strip()
+            if cust in ('nan', 'None', ''):
+                cust = ''
+            dept = str(row.get('department', '') or '').strip()
+            if dept in ('nan', 'None', ''):
+                dept = ''
+            proj = str(row.get('project') or row.get('project_name') or '').strip()
+            if proj in ('nan', 'None', ''):
+                proj = ''
+            bank = str(row.get('bank_account', '') or '').strip()
+            if bank in ('nan', 'None', ''):
+                bank = ''
             self.data.append({
                 'date': parsed_date,
                 'date_str': date_str,
@@ -3641,8 +3732,12 @@ class _StandardizedJournalWrapper:
                 'summary': summary,
                 'debit': debit,
                 'credit': credit,
-                'aux_accounting': '',
-                'settlement_from_aux': '',
+                'aux_accounting': cust,
+                'settlement_from_aux': cust,
+                'customer_supplier': cust,
+                'department': dept,
+                'project': proj,
+                'bank_account': bank,
             })
     
     @property
@@ -3659,16 +3754,21 @@ class _StandardizedJournalWrapper:
                     filtered.append(s)
                     break
         
+        # v3.68 (2026-06-02): L2 0命中时设_skip_l3=True,防止L3污染结算对象过滤
+        _skip_l3 = False
         if not filtered and fuzzy_fallback and summary_keywords:
             for s in self.data:
                 for kw in summary_keywords:
                     if kw and (kw in s['summary'] or
                                kw in s.get('aux_accounting', '') or
-                               kw in s.get('settlement_from_aux', '')):
+                               kw in s.get('settlement_from_aux', '') or
+                               kw in s.get('customer_supplier', '')):
                         filtered.append(s)
                         break
+            if not filtered:
+                _skip_l3 = True
         
-        if not filtered and fuzzy_fallback and subject_keywords:
+        if not filtered and not _skip_l3 and fuzzy_fallback and subject_keywords:
             for s in self.data:
                 for kw in subject_keywords:
                     if kw and (s['subject_code'].startswith(kw) or
@@ -3682,7 +3782,8 @@ class _StandardizedJournalWrapper:
                 for kw in summary_keywords:
                     if kw and (kw in s['summary'] or
                                kw in s.get('aux_accounting', '') or
-                               kw in s.get('settlement_from_aux', '')):
+                               kw in s.get('settlement_from_aux', '') or
+                               kw in s.get('customer_supplier', '')):
                         matched.append(s)
                         break
             if matched:
@@ -3709,7 +3810,11 @@ class _StandardizedJournalWrapper:
     
     def get_last_date_by_settlement(self, settlement_name, subject_code_prefix,
                                     summary_keywords=None, direction=None):
-        """获取结算对象的末笔发生日期"""
+        """获取结算对象的末笔发生日期
+
+        v3.68 (2026-06-02): 无匹配时回退到父科目最近一笔日期(fallback_parent),
+        适用于聚合行(单位应付款/个人应付款/其他)和TB有但journal无独立记录的结算对象。
+        """
         import re as _re
         settlement_name = self._clean_name(settlement_name)
         
@@ -3729,6 +3834,17 @@ class _StandardizedJournalWrapper:
         matched = self.query_by_subject(subject_keywords, summary_keywords, direction)
         
         if not matched:
+            # v3.68 (2026-06-02): fallback_parent - 取父科目下所有分录的最近一笔日期
+            parent_matched = self.query_by_subject(subject_keywords, None, direction)
+            if parent_matched:
+                parent_matched.sort(key=lambda x: str(x['date'] or '')[:10] or '0000-00-00')
+                last = parent_matched[-1]
+                return {
+                    'date': last['date'],
+                    'status': 'fallback_parent',
+                    'match_count': 0,
+                    'note': f'父科目降级: 最近日期 {str(last["date"])[:10]}, 该结算对象无独立序时账记录'
+                }
             return {'date': None, 'status': 'no_match', 'match_count': 0}
         if len(matched) > 50:
             matched.sort(key=lambda x: x['debit'] + x['credit'], reverse=True)
@@ -3856,7 +3972,13 @@ def phase3(project_dir, args):
                 xlsx_path = candidates[0]
 
     # DT-ARCH: 优先检查标准化序时账缓存
-    journal_cache = _load_cache(cache_dir, 'journal.json')
+    # v3.68 (2026-06-02): 优先 journal_normalized.json (完整 + v3.67 字段),fallback 到 journal.json
+    journal_cache = _load_cache(cache_dir, 'journal_normalized.json')
+    if journal_cache and isinstance(journal_cache, dict):
+        # journal_normalized.json 格式: {entries: [...], filtered_entries: [...], ...}
+        journal_cache = journal_cache.get('entries') or journal_cache.get('filtered_entries') or []
+    if not journal_cache:
+        journal_cache = _load_cache(cache_dir, 'journal.json')
     if journal_cache:
         print(f'  [标准化] 使用标准化序时账缓存 ({len(journal_cache)}行)')
         # 跳过原始文件搜索，直接使用缓存
@@ -3897,7 +4019,12 @@ def phase3(project_dir, args):
     )
 
     # DT-ARCH: 优先使用标准化序时账缓存
-    journal_cache = _load_cache(cache_dir, 'journal.json')
+    # v3.68 (2026-06-02): 优先 journal_normalized.json (完整 3680 条 + v3.67 字段)
+    journal_cache = _load_cache(cache_dir, 'journal_normalized.json')
+    if journal_cache and isinstance(journal_cache, dict):
+        journal_cache = journal_cache.get('entries') or journal_cache.get('filtered_entries') or []
+    if not journal_cache:
+        journal_cache = _load_cache(cache_dir, 'journal.json')
     if journal_cache:
         print(f'  [标准化] 使用标准化序时账缓存 ({len(journal_cache)}行)')
         extractor = _StandardizedJournalWrapper(journal_cache)
@@ -3927,9 +4054,11 @@ def phase3(project_dir, args):
     print('\n[Step 3.4] 批量提取发生日期 (DT-51/DT-178)')
     date_results = extract_dates(extractor, empty_rows)
     date_verified = sum(1 for r in date_results if r.get('status') == 'verified')
+    date_fallback = sum(1 for r in date_results if r.get('status') == 'fallback_parent')
     date_no_match = sum(1 for r in date_results if r.get('status') == 'no_match')
     date_ambiguous = sum(1 for r in date_results if r.get('status') == 'ambiguous')
-    print(f'  日期核实: 已确认={date_verified}, 未匹配={date_no_match}, 歧义={date_ambiguous}')
+    date_generic = sum(1 for r in date_results if r.get('status') == 'generic_skip')
+    print(f'  日期核实: 已确认={date_verified}, 父科目降级={date_fallback}, 未匹配={date_no_match}, 歧义={date_ambiguous}, 泛匹配={date_generic}')
 
     # --- Step 3.5: 批量提取业务内容 ---
     print('\n[Step 3.5] 批量提取业务内容 (DT-60/DT-149)')
@@ -3958,8 +4087,10 @@ def phase3(project_dir, args):
 
     _save_cache(cache_dir, 'phase3_results.json', {
         'date_verified': date_verified,
+        'date_fallback': date_fallback,
         'date_no_match': date_no_match,
         'date_ambiguous': date_ambiguous,
+        'date_generic': date_generic,
         'biz_updated': biz_updated,
         'biz_inferred': biz_inferred,
         'total_empty_rows': len(empty_rows),
@@ -4417,6 +4548,20 @@ def _run_reconciliation(xlsx_path, cache_dir):
         if not total1_row:
             continue
 
+        # DT-218 (2026-06-02): 查找 坏账准备/减值准备/预计损失/合计2 行
+        # 对于有备抵/减值准备的sheet,合计1是"账面价值合计(gross)",合计2是"net value"
+        # recon需要从合计1减去坏账/减值准备,才能与BS的net值匹配
+        contra_deduction_row = None  # 坏账准备 或 减值准备 行的行号
+        contra_deduction_label = ''
+        for r in range(total1_row + 1, min(ws.max_row + 1, total1_row + 5)):
+            a = ws.cell(row=r, column=1).value
+            if a and isinstance(a, str):
+                a_stripped = a.strip()
+                if a_stripped in ('坏账准备', '减值准备', '跌价准备'):
+                    contra_deduction_row = r
+                    contra_deduction_label = a_stripped
+                    break
+
         # 动态检测表头行
         bv_col = ev_col = None
         header_row = None
@@ -4577,6 +4722,14 @@ def _run_reconciliation(xlsx_path, cache_dir):
                 val = ws.cell(row=r, column=bv_col).value
                 if isinstance(val, (int, float)):
                     bv_total += val
+            # DT-218↑: 对于有坏账准备/减值准备行的sheet,合计1是gross,
+            # 需要减去contra_deduction_row的金额才能得到net value
+            # 这样才能与BS的net值匹配
+            if contra_deduction_row and bv_col:
+                contra_val = ws.cell(row=contra_deduction_row, column=bv_col).value
+                if isinstance(contra_val, (int, float)) and contra_val != 0:
+                    bv_total -= abs(contra_val)
+                    print(f'      📉 {sn}: 合计1已减{contra_deduction_label}={abs(contra_val):,.2f}→净额={bv_total:,.2f}')
         if ev_col:
             for r in range(data_start, total1_row):
                 val = ws.cell(row=r, column=ev_col).value

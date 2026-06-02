@@ -777,13 +777,23 @@ def prepare_data_rows(subject_code, aux_data=None, kmye_data=None,
         code4 = str(subject_code).strip()[:4]
         if code4 in REQUIRES_SETTLEMENT_PREFIXES:
             item_name = item.get('name', '')
-            # 始终从科目名称提取结算对象，去除科目前缀
-            extracted = infer_counterparty_from_name(subject_code, item_name or cp_name)
-            if extracted:
-                cp_name = extracted
-                # 如果提取结果仍只是分类词，标记待补充
-                if cp_name in ('公司', '个人', '坏账准备'):
-                    cp_name = f'{cp_name}(待补充具体名称)'
+            # v0.2 (2026-06-01): 如果 cp_name 已经是真实往来单位名称（含"有限"或"公司"或非"单位X款"占位符），
+            # 则跳过 infer_counterparty_from_name，避免把真名变成"公司"
+            is_placeholder = (
+                cp_name in ('单位应收款', '单位应付款', '个人应收款', '个人应付款', '其他应收款', '其他应付款')
+                or cp_name.endswith('应收款') and '单位' in cp_name
+                or cp_name.endswith('应付款') and '单位' in cp_name
+            )
+            if not is_placeholder and cp_name and len(cp_name) >= 3:
+                # cp_name 已是真实名称（如"杭州胡庆余堂投资有限公司"），直接使用
+                pass
+            else:
+                # 占位符/空：从科目名称推断
+                extracted = infer_counterparty_from_name(subject_code, item_name or cp_name)
+                if extracted:
+                    cp_name = extracted
+                    if cp_name in ('公司', '个人', '坏账准备'):
+                        cp_name = f'{cp_name}(待补充具体名称)'
 
         # 获取余额
         balance = item.get('balance') or item.get('期末余额') or 0

@@ -1,8 +1,9 @@
 {
   "_meta": {
-    "version": "1.0.0",
+    "version": "2.0.0",
     "created_at": "2026-05-29",
-    "description": "financial-normalizer 标准化字段 → valuation-detail-table pipeline 字段的映射规则。修复映射只需改此文件。"
+    "description": "financial-normalizer 标准化字段 → valuation-detail-table pipeline 字段的映射规则。修复映射只需改此文件。\nv2.0.0 (2026-06-01): trial_balance 对齐胡庆余堂余额账(16 字段), 期初/期末合并为合一列; 新增 journal 节点, 完整 50 字段对齐胡庆余堂明细账(9 组辅助核算三件套 + 对方科目 + 余额/方向)。",
+    "updated_at": "2026-06-01"
   },
   "trial_balance": {
     "_desc": "科目余额表字段映射",
@@ -15,30 +16,56 @@
       "level3_name": null,
       "opening_debit": "beginning_debit",
       "opening_credit": "beginning_credit",
-      "opening_balance": null,
+      "opening_balance": "beginning_balance",
       "current_debit": "current_debit",
       "current_credit": "current_credit",
       "closing_debit": "ending_debit",
       "closing_credit": "ending_credit",
-      "closing_balance": null
+      "closing_balance": "ending_balance",
+      "entity_name": "entity_name",
+      "query_period": "query_period",
+      "auxiliary_type": "auxiliary_type",
+      "auxiliary_code": "auxiliary_code",
+      "auxiliary_name": "auxiliary_name",
+      "data_type": "data_type",
+      "direction": "direction",
+      "account_full_path": "account_full_path",
+      "pnl_carryover": "pnl_carryover",
+      "standard_level1": "standard_level1"
     },
     "compute_fields": {
       "balance": {
-        "_desc": "期末余额：优先 clsing_debit/closing_credit 分列值，其次 closing_balance",
-        "formula": "ed if ed and not ec else (ec if ec and not ed else (ed - ec if ed and ec else cb))",
+        "_desc": "期末余额:优先 ending_debit/ending_credit 分列,其次 ending_balance 合一列。\nv0.2 起如果源表只有 ending_balance 一列(带 direction),直接采用 ending_balance 即可",
+        "formula_priority": [
+          "ending_debit (分列, v0.1)",
+          "ending_credit (分列, v0.1)",
+          "ending_balance (合一列, v0.2)"
+        ],
+        "v0.1_formula": "ed if ed else (-ec if ec else 0)",
+        "v0.2_formula": "ending_balance",
         "variables": {
           "ed": "ending_debit",
           "ec": "ending_credit",
-          "cb": null
+          "ending_balance": "ending_balance (合一列, v0.2)"
         }
       },
       "direction": {
-        "_desc": "余额方向：根据 ending_debit/ending_credit 判定",
-        "formula": "借 if ending_debit >= ending_credit else 贷"
+        "_desc": "余额方向:优先用源表 direction 列(v0.2),否则按 ending_debit/ending_credit 判定(v0.1)",
+        "v0.2_formula": "direction (源表自带方向列,值=借/贷)",
+        "v0.1_formula": "借 if ending_debit >= ending_credit else 贷"
       },
       "level": {
-        "_desc": "科目级次：按编码长度估算",
-        "formula": "max(len(code) // 2, 1)"
+        "_desc": "科目级次:优先用 account_full_path 拆分层级,否则按编码长度估算",
+        "v0.2_formula": "len(account_full_path.split('/')) if account_full_path else max(len(code) // 2, 1)",
+        "v0.1_formula": "max(len(code) // 2, 1)"
+      },
+      "full_code": {
+        "_desc": "完整科目路径(用于 sheet_filler 匹配 source_code_prefix)",
+        "v0.2_formula": "account_full_path or code"
+      },
+      "standard_subject": {
+        "_desc": "v0.2 新增:重分类目标科目(取 standard_level1)",
+        "v0.2_formula": "standard_level1"
       }
     }
   },
@@ -246,6 +273,88 @@
         "存放地点",
         "使用地点"
       ]
+    }
+  },
+  "journal": {
+    "_desc": "序时账字段映射(50 字段对齐胡庆余堂明细账)",
+    "_source_format": "中汇查账系统 / 胡庆余堂集团明细账.xlsx",
+    "field_map": {
+      "entity_name": "entity_name",
+      "voucher_date": "date",
+      "voucher_type": "voucher_type",
+      "voucher_number": "voucher_number",
+      "summary": "summary",
+      "counter_account": "counter_account",
+      "other_account": "other_account",
+      "debit_amount": "debit_amount",
+      "credit_amount": "credit_amount",
+      "direction": "direction",
+      "balance": "balance",
+      "allocation_type": "allocation_type",
+      "subject_code": "subject_code",
+      "subject_full_path": "subject_full_path",
+      "query_subject": "query_subject",
+      "query_auxiliary": "query_auxiliary",
+      "entry_line_no": "entry_line_no",
+      "customer_supplier_code": "customer_supplier_code",
+      "customer_supplier_name": "customer_supplier",
+      "counter_customer_supplier": "counter_customer_supplier",
+      "bank_account_code": "bank_account_code",
+      "bank_account_name": "bank_account_name",
+      "counter_bank_account": "counter_bank_account",
+      "purchase_contract_code": "purchase_contract_code",
+      "purchase_contract_name": "purchase_contract_name",
+      "counter_purchase_contract": "counter_purchase_contract",
+      "sales_contract_code": "sales_contract_code",
+      "sales_contract_name": "sales_contract_name",
+      "counter_sales_contract": "counter_sales_contract",
+      "project_code": "project_code",
+      "project_name": "project_name",
+      "counter_project": "counter_project",
+      "asset_code": "asset_code",
+      "asset_name": "asset_name",
+      "counter_asset": "counter_asset",
+      "material_code": "material_code",
+      "material_name": "material_name",
+      "counter_material": "counter_material",
+      "expense_code": "expense_code",
+      "expense_name": "expense_name",
+      "counter_expense": "counter_expense",
+      "department_code": "department_code",
+      "department_name": "department",
+      "counter_department": "counter_department",
+      "cash_flow_code": "cash_flow_code",
+      "cash_flow_name": "cash_flow_name",
+      "counter_cash_flow": "counter_cash_flow",
+      "other_code": "other_code",
+      "other_name": "other_name",
+      "counter_other": "counter_other"
+    },
+    "compute_fields": {
+      "business": {
+        "_desc": "业务内容(2-6字关键词,如 货款/服务费/工程款/保证金),从 summary 提取",
+        "formula": "infer_business_content(summary)",
+        "_ref": "DT-60/DT-149/DT-172/DT-179"
+      },
+      "settlement": {
+        "_desc": "结算对象/户名(往来科目的对方单位)",
+        "v0.2_formula": "customer_supplier_name (本方) or counter_customer_supplier (对方) or bank_account_name",
+        "v0.1_fallback": "customer_supplier"
+      },
+      "occurrence_date": {
+        "_desc": "发生日期(取距基准日最近的同方向凭证日期)",
+        "formula": "voucher_date",
+        "_ref": "DT-51/DT-178",
+        "_note": "v0.1 中序时账的 date 字段,v0.2 重命名为 voucher_date 但映射到内部 date 仍为 date"
+      },
+      "bank_name": {
+        "_desc": "开户银行(对应 3-1-2 Sheet 的 settlement 字段)",
+        "formula": "bank_account_name"
+      },
+      "department": {
+        "_desc": "部门(对应管理费用/销售费用 Sheet 的辅助列)",
+        "formula": "department_name"
+      }
     }
   }
 }

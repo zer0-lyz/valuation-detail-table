@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "version": "0.1.0",
-    "desc": "列名变体 → 标准字段映射表。可编辑，guess 阶段自动匹配，apply 阶段加载使用。"
+    "version": "0.2.0",
+    "desc": "列名变体 → 标准字段映射表。可编辑，guess 阶段自动匹配，apply 阶段加载使用。\nv0.2.0 (2026-06-01): trial_balance 扩展为对齐中汇查账系统余额账 16 字段, journal 扩展为对齐中汇查账系统明细账 50 字段(新增对方科目/银行账号/合同/项目/资产/物料/费用/部门/现金流/其他 等9组辅助核算三件套)。"
   },
   "trial_balance": {
     "account_code": {
@@ -42,7 +42,9 @@
         "期初余额（借）",
         "借(期初)",
         "期初余额借方",
-        "年初余额借方"
+        "年初余额借方",
+        "本位币期初(借)",
+        "期初(借)"
       ]
     },
     "opening_credit": {
@@ -55,7 +57,9 @@
         "期初余额（贷）",
         "贷(期初)",
         "期初余额贷方",
-        "年初余额贷方"
+        "年初余额贷方",
+        "本位币期初(贷)",
+        "期初(贷)"
       ]
     },
     "opening_balance": {
@@ -66,7 +70,10 @@
         "期初数",
         "年初数",
         "opening_balance",
-        "opening"
+        "opening",
+        "本位币期初",
+        "期初余额(本位币)",
+        "期初(本位币)"
       ]
     },
     "current_debit": {
@@ -82,7 +89,10 @@
         "current_debit",
         "debit",
         "本期发生借方",
-        "本月发生借方"
+        "本月发生借方",
+        "本位币借方",
+        "本币借方",
+        "本期借方(本币)"
       ]
     },
     "current_credit": {
@@ -98,7 +108,10 @@
         "current_credit",
         "credit",
         "本期发生贷方",
-        "本月发生贷方"
+        "本月发生贷方",
+        "本位币贷方",
+        "本币贷方",
+        "本期贷方(本币)"
       ]
     },
     "closing_debit": {
@@ -111,7 +124,9 @@
         "期末余额（借）",
         "借(期末)",
         "期末余额借方",
-        "年末余额借方"
+        "年末余额借方",
+        "本位币期末(借)",
+        "期末(借)"
       ]
     },
     "closing_credit": {
@@ -124,7 +139,9 @@
         "期末余额（贷）",
         "贷(期末)",
         "期末余额贷方",
-        "年末余额贷方"
+        "年末余额贷方",
+        "本位币期末(贷)",
+        "期末(贷)"
       ]
     },
     "closing_balance": {
@@ -136,7 +153,10 @@
         "年末数",
         "余额",
         "closing_balance",
-        "balance"
+        "balance",
+        "本位币期末",
+        "期末余额(本位币)",
+        "期末(本位币)"
       ]
     },
     "level1_name": {
@@ -186,6 +206,127 @@
         "currency",
         "币种名称"
       ]
+    },
+    "entity_name": {
+      "label": "企业主体名称",
+      "variants": [
+        "企业主体名称",
+        "主体名称",
+        "公司名称",
+        "公司名",
+        "企业名称",
+        "entity_name",
+        "company_name",
+        "主体"
+      ]
+    },
+    "query_period": {
+      "label": "查询区间",
+      "variants": [
+        "查询区间",
+        "区间",
+        "期间",
+        "查询期间",
+        "数据期间",
+        "query_period",
+        "period_range",
+        "期间范围"
+      ]
+    },
+    "auxiliary_type": {
+      "label": "核算类型",
+      "variants": [
+        "核算类型",
+        "辅助核算类型",
+        "维度类型",
+        "辅助类型",
+        "auxiliary_type",
+        "aux_type",
+        "辅助维度"
+      ]
+    },
+    "auxiliary_code": {
+      "label": "核算编号",
+      "variants": [
+        "核算编号",
+        "辅助核算编号",
+        "辅助编号",
+        "维度编号",
+        "auxiliary_code",
+        "aux_code",
+        "核算代码"
+      ]
+    },
+    "auxiliary_name": {
+      "label": "核算名称",
+      "variants": [
+        "核算名称",
+        "辅助核算名称",
+        "辅助名称",
+        "维度名称",
+        "auxiliary_name",
+        "aux_name",
+        "核算名字"
+      ]
+    },
+    "data_type": {
+      "label": "数据类型",
+      "variants": [
+        "数据类型",
+        "数据种类",
+        "data_type",
+        "币种类别",
+        "本币/原币",
+        "本币/原币标识"
+      ]
+    },
+    "direction": {
+      "label": "方向",
+      "variants": [
+        "方向",
+        "余额方向",
+        "借贷方向",
+        "借/贷",
+        "dr/cr",
+        "direction",
+        "balance_direction"
+      ]
+    },
+    "account_full_path": {
+      "label": "科目全路径",
+      "variants": [
+        "科目全路径",
+        "科目路径",
+        "科目全名",
+        "全路径",
+        "account_full_path",
+        "subject_path",
+        "科目完整路径"
+      ]
+    },
+    "pnl_carryover": {
+      "label": "损益结转金额",
+      "variants": [
+        "损益结转金额",
+        "损益结转",
+        "结转损益",
+        "结转金额",
+        "损益结转额",
+        "pnl_carryover",
+        "利润结转"
+      ]
+    },
+    "standard_level1": {
+      "label": "标准1级科目",
+      "variants": [
+        "标准1级科目",
+        "标准一级科目",
+        "标准一级",
+        "标准大类",
+        "standard_level1",
+        "std_level1",
+        "标准1级"
+      ]
     }
   },
   "journal": {
@@ -197,7 +338,11 @@
         "记账日期",
         "date",
         "Date",
-        "业务日期"
+        "业务日期",
+        "凭证日期",
+        "voucher_date",
+        "业务日期",
+        "制单日期"
       ]
     },
     "voucher_no": {
@@ -208,7 +353,10 @@
         "凭证编号",
         "编号",
         "voucher_no",
-        "凭证号码"
+        "凭证号码",
+        "凭证号",
+        "凭证字号",
+        "凭证编号"
       ]
     },
     "account_code": {
@@ -219,7 +367,11 @@
         "科目编号",
         "ACCT",
         "account_code",
-        "code"
+        "code",
+        "末级科目编号",
+        "科目编号",
+        "本方科目编号",
+        "subject_code"
       ]
     },
     "account_name": {
@@ -229,7 +381,11 @@
         "科目",
         "会计科目",
         "account_name",
-        "subject"
+        "subject",
+        "末级科目全路径",
+        "科目全路径",
+        "科目路径",
+        "subject_full_path"
       ]
     },
     "summary": {
@@ -238,6 +394,11 @@
         "摘要",
         "业务摘要",
         "摘要说明",
+        "description",
+        "memo",
+        "备注",
+        "摘要",
+        "业务摘要",
         "description",
         "memo",
         "备注"
@@ -252,7 +413,11 @@
         "借(金额)",
         "借方发生",
         "debit",
-        "debit_amount"
+        "debit_amount",
+        "本位币借方",
+        "借方金额(本位币)",
+        "本币借方",
+        "debit"
       ]
     },
     "credit_amount": {
@@ -264,7 +429,11 @@
         "贷(金额)",
         "贷方发生",
         "credit",
-        "credit_amount"
+        "credit_amount",
+        "本位币贷方",
+        "贷方金额(本位币)",
+        "本币贷方",
+        "credit"
       ]
     },
     "customer_supplier": {
@@ -278,7 +447,10 @@
         "对方单位",
         "客户名称",
         "供货单位",
-        "客户/供应商"
+        "客户/供应商",
+        "往来单位名称",
+        "客商名称",
+        "单位名称"
       ]
     },
     "department": {
@@ -288,7 +460,9 @@
         "所属部门",
         "使用部门",
         "责任部门",
-        "部门名称"
+        "部门名称",
+        "部门名称",
+        "部门"
       ]
     },
     "project_name": {
@@ -299,7 +473,9 @@
         "工程",
         "项目名称",
         "工程名称",
-        "项目/工程"
+        "项目/工程",
+        "项目名称",
+        "项目"
       ]
     },
     "personnel": {
@@ -325,6 +501,463 @@
         "货币名称",
         "currency",
         "币种名称"
+      ]
+    },
+    "voucher_type": {
+      "label": "字",
+      "variants": [
+        "字",
+        "凭证字",
+        "凭证类别字",
+        "voucher_type",
+        "voucher_word",
+        "凭证类型字"
+      ]
+    },
+    "voucher_number": {
+      "label": "号",
+      "variants": [
+        "号",
+        "凭证号数",
+        "凭证序号",
+        "voucher_number",
+        "voucher_seq",
+        "凭证号"
+      ]
+    },
+    "counter_account": {
+      "label": "对方科目",
+      "variants": [
+        "对方科目",
+        "对方科目全路径",
+        "对端科目",
+        "counter_account",
+        "counter_subject"
+      ]
+    },
+    "other_account": {
+      "label": "本方其他科目",
+      "variants": [
+        "本方其他科目",
+        "本方其他",
+        "其他本方科目",
+        "other_account",
+        "other_subject"
+      ]
+    },
+    "direction": {
+      "label": "方向",
+      "variants": [
+        "方向",
+        "余额方向",
+        "借贷方向",
+        "借/贷",
+        "dr/cr",
+        "direction",
+        "balance_direction"
+      ]
+    },
+    "balance": {
+      "label": "本位币余额",
+      "variants": [
+        "本位币余额",
+        "余额",
+        "本币余额",
+        "余额(本位币)",
+        "balance",
+        "running_balance"
+      ]
+    },
+    "allocation_type": {
+      "label": "结转分配类型",
+      "variants": [
+        "结转分配类型",
+        "结转类型",
+        "分配类型",
+        "结转分配",
+        "allocation_type",
+        "carryover_type"
+      ]
+    },
+    "subject_code": {
+      "label": "末级科目编号",
+      "variants": [
+        "末级科目编号",
+        "末级编号",
+        "本行科目编号",
+        "subject_code",
+        "leaf_account_code"
+      ]
+    },
+    "subject_full_path": {
+      "label": "末级科目全路径",
+      "variants": [
+        "末级科目全路径",
+        "末级科目路径",
+        "末级路径",
+        "subject_full_path",
+        "leaf_account_path"
+      ]
+    },
+    "query_subject": {
+      "label": "查询科目",
+      "variants": [
+        "查询科目",
+        "查询的科目",
+        "查询入口科目",
+        "query_subject",
+        "query_account"
+      ]
+    },
+    "query_auxiliary": {
+      "label": "查询核算",
+      "variants": [
+        "查询核算",
+        "查询的核算",
+        "查询入口核算",
+        "query_auxiliary",
+        "query_aux"
+      ]
+    },
+    "entry_line_no": {
+      "label": "分录行号",
+      "variants": [
+        "分录行号",
+        "行号",
+        "分录序号",
+        "entry_line_no",
+        "line_no",
+        "ledger_line"
+      ]
+    },
+    "customer_supplier_code": {
+      "label": "往来单位编号",
+      "variants": [
+        "往来单位编号",
+        "单位编号",
+        "客商编号",
+        "客户编号",
+        "供应商编号",
+        "customer_supplier_code",
+        "unit_code",
+        "party_code"
+      ]
+    },
+    "counter_customer_supplier": {
+      "label": "对方往来单位名称",
+      "variants": [
+        "对方往来单位名称",
+        "对方往来单位",
+        "对方客商",
+        "对方单位名称",
+        "counter_customer_supplier",
+        "counter_party",
+        "counter_unit"
+      ]
+    },
+    "bank_account_code": {
+      "label": "银行账号编号",
+      "variants": [
+        "银行账号编号",
+        "银行账号",
+        "账号编号",
+        "账号",
+        "bank_account_code",
+        "account_no",
+        "bank_account_no"
+      ]
+    },
+    "bank_account_name": {
+      "label": "银行账号名称",
+      "variants": [
+        "银行账号名称",
+        "银行账户名称",
+        "账户名称",
+        "开户行名称",
+        "bank_account_name",
+        "account_name",
+        "bank_name"
+      ]
+    },
+    "counter_bank_account": {
+      "label": "对方银行账号名称",
+      "variants": [
+        "对方银行账号名称",
+        "对方银行账户",
+        "对方账户名称",
+        "对方开户行",
+        "counter_bank_account",
+        "counter_account_name",
+        "counter_bank_name"
+      ]
+    },
+    "purchase_contract_code": {
+      "label": "采购合同编号",
+      "variants": [
+        "采购合同编号",
+        "采购合同号",
+        "采购合同",
+        "purchase_contract_code",
+        "po_no",
+        "po_number"
+      ]
+    },
+    "purchase_contract_name": {
+      "label": "采购合同名称",
+      "variants": [
+        "采购合同名称",
+        "采购合同名",
+        "采购合同标题",
+        "purchase_contract_name",
+        "po_name"
+      ]
+    },
+    "counter_purchase_contract": {
+      "label": "对方采购合同名称",
+      "variants": [
+        "对方采购合同名称",
+        "对方采购合同",
+        "对方合同名称",
+        "counter_purchase_contract",
+        "counter_po_name"
+      ]
+    },
+    "sales_contract_code": {
+      "label": "销售合同编号",
+      "variants": [
+        "销售合同编号",
+        "销售合同号",
+        "销售合同",
+        "sales_contract_code",
+        "so_no",
+        "so_number"
+      ]
+    },
+    "sales_contract_name": {
+      "label": "销售合同名称",
+      "variants": [
+        "销售合同名称",
+        "销售合同名",
+        "销售合同标题",
+        "sales_contract_name",
+        "so_name"
+      ]
+    },
+    "counter_sales_contract": {
+      "label": "对方销售合同名称",
+      "variants": [
+        "对方销售合同名称",
+        "对方销售合同",
+        "对方销售合同名",
+        "counter_sales_contract",
+        "counter_so_name"
+      ]
+    },
+    "project_code": {
+      "label": "项目编号",
+      "variants": [
+        "项目编号",
+        "项目代码",
+        "project_code",
+        "proj_no",
+        "项目号"
+      ]
+    },
+    "counter_project": {
+      "label": "对方项目名称",
+      "variants": [
+        "对方项目名称",
+        "对方项目",
+        "对方工程名称",
+        "counter_project",
+        "counter_proj_name"
+      ]
+    },
+    "asset_code": {
+      "label": "资产项目编号",
+      "variants": [
+        "资产项目编号",
+        "资产编号",
+        "卡片编号",
+        "asset_code",
+        "asset_no",
+        "fa_code"
+      ]
+    },
+    "asset_name": {
+      "label": "资产项目名称",
+      "variants": [
+        "资产项目名称",
+        "资产名称",
+        "卡片名称",
+        "asset_name",
+        "asset_item_name"
+      ]
+    },
+    "counter_asset": {
+      "label": "对方资产项目名称",
+      "variants": [
+        "对方资产项目名称",
+        "对方资产名称",
+        "对方资产",
+        "counter_asset",
+        "counter_asset_name"
+      ]
+    },
+    "material_code": {
+      "label": "存货物料编号",
+      "variants": [
+        "存货物料编号",
+        "物料编号",
+        "存货编号",
+        "material_code",
+        "item_code",
+        "sku"
+      ]
+    },
+    "material_name": {
+      "label": "存货物料名称",
+      "variants": [
+        "存货物料名称",
+        "物料名称",
+        "存货名称",
+        "material_name",
+        "item_name",
+        "sku_name"
+      ]
+    },
+    "counter_material": {
+      "label": "对方存货物料名称",
+      "variants": [
+        "对方存货物料名称",
+        "对方物料名称",
+        "对方存货",
+        "counter_material",
+        "counter_item_name"
+      ]
+    },
+    "expense_code": {
+      "label": "费用项目编号",
+      "variants": [
+        "费用项目编号",
+        "费用编号",
+        "expense_code",
+        "expense_no"
+      ]
+    },
+    "expense_name": {
+      "label": "费用项目名称",
+      "variants": [
+        "费用项目名称",
+        "费用名称",
+        "expense_name",
+        "expense_item_name"
+      ]
+    },
+    "counter_expense": {
+      "label": "对方费用项目名称",
+      "variants": [
+        "对方费用项目名称",
+        "对方费用名称",
+        "对方费用",
+        "counter_expense",
+        "counter_expense_name"
+      ]
+    },
+    "department_code": {
+      "label": "部门编号",
+      "variants": [
+        "部门编号",
+        "部门代码",
+        "department_code",
+        "dept_no",
+        "dept_code"
+      ]
+    },
+    "counter_department": {
+      "label": "对方部门名称",
+      "variants": [
+        "对方部门名称",
+        "对方部门",
+        "对方部门名",
+        "counter_department",
+        "counter_dept"
+      ]
+    },
+    "cash_flow_code": {
+      "label": "现金流量编号",
+      "variants": [
+        "现金流量编号",
+        "现金流编号",
+        "现金流代码",
+        "cash_flow_code",
+        "cf_code",
+        "cashflow_no"
+      ]
+    },
+    "cash_flow_name": {
+      "label": "现金流量名称",
+      "variants": [
+        "现金流量名称",
+        "现金流名称",
+        "现金流量项",
+        "cash_flow_name",
+        "cf_name",
+        "cashflow_item"
+      ]
+    },
+    "counter_cash_flow": {
+      "label": "对方现金流量名称",
+      "variants": [
+        "对方现金流量名称",
+        "对方现金流",
+        "对方现金流量",
+        "counter_cash_flow",
+        "counter_cf_name"
+      ]
+    },
+    "other_code": {
+      "label": "其他编号",
+      "variants": [
+        "其他编号",
+        "自定义编号",
+        "其他代码",
+        "other_code",
+        "misc_code",
+        "other_no"
+      ]
+    },
+    "other_name": {
+      "label": "其他名称",
+      "variants": [
+        "其他名称",
+        "自定义名称",
+        "其他名",
+        "other_name",
+        "misc_name"
+      ]
+    },
+    "counter_other": {
+      "label": "对方其他名称",
+      "variants": [
+        "对方其他名称",
+        "对端其他",
+        "对端自定义",
+        "counter_other",
+        "counter_misc_name"
+      ]
+    },
+    "entity_name": {
+      "label": "企业主体名称",
+      "variants": [
+        "企业主体名称",
+        "主体名称",
+        "公司名称",
+        "公司名",
+        "企业名称",
+        "entity_name",
+        "company_name",
+        "主体"
       ]
     }
   },

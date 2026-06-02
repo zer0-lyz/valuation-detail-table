@@ -612,28 +612,39 @@ def _filter_data(raw_data, config, source_file, cache_dir):
         # 同一code多行时，跳过名称不含'*'或'　'的行（汇总行），保留明细行
         # 这些汇总行的余额=子行余额之和，不应重复计入
         # 注：汇总行特征是名称较短且不含'*'前缀/首字符缩进
+        # DT-217 (2026-06-02): 修复"误删真实明细账户"bug
+        # 旧BUG: 同一code有多个name时，按名称长度取最短为汇总行。但当 subjects.json
+        # 已经预清理掉父级聚合行(单位应收款/中国银行/成本法等)后,剩下的都是真
+        # 实leaf账户(阜康电器/徐金刚/押金等),此规则会误删其中一个,造成后续sheet
+        # 合计与BS不符(3-1-2少738,978.42 / 3-8-3少2,750,044 / 4-4少5,600,000等)。
+        # 修复: 只有当"最像汇总行"的行同时也是 auxiliary_type/counterparty 都为空
+        # 时才视为汇总行,否则视为合法明细账户,全部保留。
         from collections import defaultdict as _dd
         code_summary_names = _dd(set)  # code → 需要跳过的汇总行名称
         code_rows = _dd(list)
+        # 收集每个code的"候选汇总行"(无auxiliary_type且无counterparty)
+        candidate_summary_per_code = _dd(set)
         for s in subjects:
             c = str(s.get('code', ''))
             if c and c[0].isdigit():
                 code_rows[c].append(s.get('name', '').strip())
+                aux_type = (s.get('auxiliary_type') or '').strip()
+                cp = (s.get('counterparty') or s.get('auxiliary_name') or '').strip()
+                name = (s.get('name') or '').strip()
+                if not aux_type and not cp and name:
+                    candidate_summary_per_code[c].add(name)
         for c, names in code_rows.items():
             unique_names = set(n for n in names if n)
             if len(unique_names) > 1:
-                # 第一行（不含*前缀且名称最短的）通常是汇总行
+                # DT-217↑: 候选汇总行(父级聚合行)必须 auxiliary_type/counterparty 都为空。
+                # 如果同code下所有行都设置了auxiliary_type或counterparty,说明都是合法
+                # 明细账户,不应应用规则2,全部保留。
+                if not candidate_summary_per_code.get(c):
+                    continue
                 summary_names = [n for n in unique_names if not n.startswith('*') and not n.startswith('　')]
                 if summary_names:
-                    if len(summary_names) == len(unique_names):
-                        # DT-212: 所有名称都无*前缀时，只取最短名称为汇总行（如银行存款→银行明细户）
-                        code_summary_names[c] = {sorted(summary_names, key=len)[0]}
-                    else:
-                        # 取所有无*前缀的名称作为汇总行
-                        code_summary_names[c] = set(summary_names)
-                else:
-                    # 全部都带*，取第一个作为汇总（不应出现这种情况）
-                    code_summary_names[c] = {sorted(unique_names, key=len)[0]}
+                    # 取所有无*前缀的名称中的最短为汇总行
+                    code_summary_names[c] = {sorted(summary_names, key=len)[0]}
 
         # DT-FR1: 实现filter_rule分类逻辑
         # filter_rule格式: "名称含'股票'" / "名称含'房屋'或'建筑物'或'厂房'" / "默认(无法分类时填入此Sheet)"
@@ -692,11 +703,19 @@ def _filter_data(raw_data, config, source_file, cache_dir):
                                 break
                         if claimed:
                             continue
+                # v0.2 (2026-06-01): 优先使用 counterparty (aux_name) 作为 name
+                # 这样 Phase 2 prepare_data_rows() 在用 infer_counterparty_from_name
+                # 之前就有了真实的往来单位名称，而不是占位符 "单位应收款"
+                entry_name = s.get('counterparty') or s.get('name', '')
                 rows.append({
                     'code': code,
-                    'name': s.get('name', ''),
+                    'name': entry_name,
                     'balance': s.get('balance', 0),
                     'direction': s.get('direction', s.get('closing_direction', '')),
+                    'auxiliary_type': s.get('auxiliary_type', ''),
+                    'auxiliary_code': s.get('auxiliary_code', ''),
+                    'auxiliary_name': s.get('auxiliary_name', ''),
+                    'account_full_path': s.get('account_full_path', ''),
                 })
 
     # fixed_assets.json格式: {items: [{asset_basics, financial_records}]}

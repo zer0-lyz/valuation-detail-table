@@ -37,7 +37,7 @@
         "account_no"
       ],
       "dedup_strategy": "keep_first",
-      "reconcile_to": "subjects.json:1002:balance",
+      "reconcile_to": "BS:货币资金",
       "data_template": "bank_deposit",
       "accounting_ref": null,
       "idempotent_clear_range": {
@@ -163,7 +163,7 @@
     },
     "3-2-3-基金": {
       "primary_source": "subjects.json",
-      "source_code_prefix": "110103",
+      "source_code_prefix": "1101",
       "dedup_key": null,
       "dedup_strategy": null,
       "reconcile_to": "bs_balances.json:交易性金融资产:ending_balance",
@@ -304,7 +304,7 @@
         "balance"
       ],
       "dedup_strategy": "keep_first",
-      "reconcile_to": "subjects.json:1221:balance",
+      "reconcile_to": "BS:其他应收款",
       "data_template": "counterparty",
       "has_bad_debt": true,
       "accounting_ref": "bad_debt_1231",
@@ -530,10 +530,6 @@
       "dedup_strategy": "keep_first",
       "reconcile_to": "subjects.json:1701:balance",
       "data_template": "counterparty",
-      "contra_account": {
-        "depreciation": "1702",
-        "impairment": "1703"
-      },
       "accounting_ref": "contra_account_1701",
       "filter_rule": "名称含'土地'或'使用权(土地)'",
       "idempotent_clear_range": {
@@ -672,8 +668,9 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": null,
-      "reconcile_to": "subjects.json:1901:balance"
+      "source_code_prefix": "1812",
+      "reconcile_to": "BS:其他非流动资产",
+      "filter_rule": ""
     },
     "4-1债权投资": {
       "primary_source": "subjects.json",
@@ -731,7 +728,7 @@
         "balance"
       ],
       "dedup_strategy": "keep_first",
-      "reconcile_to": "subjects.json:1511:balance",
+      "reconcile_to": "BS:长期股权投资",
       "data_template": "counterparty",
       "accounting_ref": "equity_investment_1511",
       "idempotent_clear_range": {
@@ -752,8 +749,9 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "source_code_prefix": "1511",
-      "reconcile_to": "subjects.json:1511:balance"
+      "source_code_prefix": [],
+      "reconcile_to": "subjects.json:1511:balance",
+      "_v0p21_note": "DT-226: 胡庆余堂BS中其他权益工具投资=0,改为空数据源避免fallback到4-4"
     },
     "4-6-1-股票": {
       "primary_source": "subjects.json",
@@ -768,7 +766,9 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "reconcile_to": "subjects.json:1101:balance"
+      "reconcile_to": "BS:其他非流动金融资产",
+      "source_code_prefix": "1813",
+      "filter_rule": "名称含'股票'"
     },
     "4-6-2-债券": {
       "primary_source": "subjects.json",
@@ -783,7 +783,9 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "reconcile_to": "subjects.json:1501:balance"
+      "reconcile_to": "BS:其他非流动金融资产",
+      "source_code_prefix": "1813",
+      "filter_rule": "名称含'债券'"
     },
     "4-6-3-基金": {
       "primary_source": "subjects.json",
@@ -798,7 +800,9 @@
         "start_row": 6,
         "end_row": "last_data"
       },
-      "reconcile_to": "subjects.json:1101:balance"
+      "reconcile_to": "BS:其他非流动金融资产",
+      "source_code_prefix": "1813",
+      "filter_rule": "默认(无法分类时填入此Sheet)"
     },
     "4-8-1房屋建筑物": {
       "primary_source": "subjects.json",
@@ -1064,7 +1068,7 @@
         "balance"
       ],
       "dedup_strategy": "keep_first",
-      "reconcile_to": "bs_balances.json:其他应付款:ending_balance",
+      "reconcile_to": "BS:其他应付款",
       "data_template": "counterparty",
       "accounting_ref": "2102=衍生金融负债(财政部标准); 房地产企业210201结算中心借款在BS上并入其他应付款列示, 故归入此sheet. 勾稽等式: 210201 + 2241贷方 = BS其他应付款",
       "idempotent_clear_range": {
@@ -1246,8 +1250,7 @@
     "5-9应交税费": {
       "primary_source": "subjects.json",
       "source_code_prefix": "2221",
-      "filter_rule": "名称含'应交税费'",
-      "skip_sub_accounts": true,
+      "filter_rule": "默认(无法分类时填入此Sheet)",
       "dedup_key": [
         "code"
       ],
@@ -1443,6 +1446,45 @@
         "end_row": "last_data"
       },
       "_desc": "所有者权益类科目汇总，账面价值来自资产负债表"
+    },
+    "4-7-1投资性房地产": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "1521",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "BS:投资性房地产",
+      "data_template": "counterparty",
+      "filter_rule": "默认(无法分类时填入此Sheet)",
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "contra_account": {
+        "depreciation": "1522",
+        "impairment": "1525"
+      },
+      "accounting_ref": "contra_account_1521"
+    },
+    "6-10专项应付款": {
+      "primary_source": "subjects.json",
+      "source_code_prefix": "2711",
+      "dedup_key": [
+        "name",
+        "balance"
+      ],
+      "dedup_strategy": "keep_first",
+      "reconcile_to": "BS:专项应付款",
+      "data_template": "counterparty",
+      "accounting_ref": null,
+      "idempotent_clear_range": {
+        "start_row": 6,
+        "end_row": "last_data"
+      },
+      "filter_rule": null,
+      "_comment": "DT-ADD: 公司用2711*编码(标准2801*)对应专项应付款; BS对照R62"
     }
   },
   "dedup_strategy_definitions": {

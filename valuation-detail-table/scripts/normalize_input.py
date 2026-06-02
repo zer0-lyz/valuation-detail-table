@@ -57,16 +57,16 @@ else:
 # 文件名关键词 → 文档类型映射
 FILE_TYPE_PATTERNS = {
     'trial_balance': [
-        '科目余额', '余额表', '试算平衡', '科目汇总', 'trial balance',
+        '科目余额', '余额表', '余额账', '试算平衡', '科目汇总', '总账', 'trial balance',
     ],
     'balance_sheet': [
         '资产负债表', '财务报表', 'balance sheet',
     ],
     'journal': [
-        '序时账', '明细账', '凭证一览表', '日记账', 'journal',
+        '序时账', '明细账', '凭证一览表', '日记账', '凭证分录', 'journal',
     ],
     'fixed_asset': [
-        '固定资产', '资产台账', '资产卡片', '折旧', 'fixed asset',
+        '固定资产', '资产台账', '资产卡片', '卡片台账', '卡片账', '折旧', 'fixed asset',
     ],
     'income_statement': [
         '利润表', '损益表', 'income statement', '利润及利润分配',
@@ -428,19 +428,27 @@ def _check_normalization_quality(subjects, doc_type='trial_balance'):
             1 for s in subjects
             if s.get('ending_debit', 0) == 0 and s.get('ending_credit', 0) == 0
         )
+        # v0.2 (2026-06-01) 兼容:胡庆余堂格式使用合一期初/期末列(ending_balance),
+        # 此时 ending_debit/ending_credit 全为 0 是正常的(因为根本没分列)
+        has_ending_balance_col = sum(
+            1 for s in subjects if s.get('ending_balance', 0) != 0
+        )
         zero_rate = zero_balance / total if total > 0 else 1.0
 
         # 如果超过80%的科目余额为零，且所有ending_debit/ending_credit都为零，
-        # 说明normalizer没识别到期末余额列（双行表头场景）
+        # 但 ending_balance 合一列有值 → v0.2 合一期初/期末格式,正常通过
         if zero_rate > 0.8 and zero_ending == total:
-            return False, (
-                f'数据质量异常: {zero_balance}/{total} 科目零余额 ({zero_rate:.0%}), '
-                f'所有ending_debit/ending_credit均为零 → 疑似双行表头未识别, '
-                f'应降级到source_header_parser'
-            )
+            if has_ending_balance_col > 0:
+                pass  # v0.2 合一期初/期末格式,正常
+            else:
+                return False, (
+                    f'数据质量异常: {zero_balance}/{total} 科目零余额 ({zero_rate:.0%}), '
+                    f'所有ending_debit/ending_credit均为零 → 疑似双行表头未识别, '
+                    f'应降级到source_header_parser'
+                )
 
-        # 全部科目都零余额 → 肯定有问题
-        if zero_rate > 0.99:
+        # 全部科目都零余额(v0.1 balance 和 v0.2 ending_balance 都为 0)→ 肯定有问题
+        if zero_rate > 0.99 and has_ending_balance_col == 0:
             return False, (
                 f'数据质量异常: {zero_balance}/{total} 科目零余额 ({zero_rate:.0%}) → 标准化结果无效'
             )
@@ -534,20 +542,27 @@ def _convert_tb_to_vdt_format(df_rows):
                 subject[tgt_field] = val
 
         # 计算 balance 和 direction（field_mapping 中的 compute_fields）
+        # v0.2 (2026-06-01) 兼容:胡庆余堂格式使用合一期初/期末列(ending_balance)+direction 列
         ed = subject.get('ending_debit', 0)
         ec = subject.get('ending_credit', 0)
+        eb = subject.get('ending_balance', 0)  # v0.2 合一列
+        src_direction = subject.get('direction', '')  # v0.2 源表 direction 列
+
         if ed and not ec:
             subject['balance'] = ed
-            subject['direction'] = '借'
+            subject['direction'] = '借' if not src_direction else src_direction
         elif ec and not ed:
             subject['balance'] = ec
-            subject['direction'] = '贷'
+            subject['direction'] = '贷' if not src_direction else src_direction
         elif ed and ec:
             subject['balance'] = ed - ec
             subject['direction'] = '借' if ed >= ec else '贷'
+        elif eb:  # v0.2: 合一期末列有值,直接用
+            subject['balance'] = eb
+            subject['direction'] = src_direction if src_direction else ('借' if eb >= 0 else '贷')
         else:
             subject['balance'] = 0.0
-            subject['direction'] = ''
+            subject['direction'] = src_direction if src_direction else ''
 
         # 级次
         subject['level'] = max(len(code) // 2, 1) if len(code) <= 8 else 1
@@ -964,8 +979,12 @@ def _export_standardized_workbook(project_dir: str, report: dict):
 
     # ── Sheet 1: 科目余额表（标准化） ──
     ws1 = wb.create_sheet('科目余额表（标准化）')
+    # v0.2 (2026-06-01): 增加辅助核算三件套 + 路径/重分类字段
     headers1 = ['科目编码', '科目名称', '期末余额', '方向', '科目级次',
-                '映射Sheet编码', '映射Sheet名称']
+                '映射Sheet编码', '映射Sheet名称',
+                '核算类型', '核算编号', '核算名称',
+                '科目全路径', '标准1级科目', '数据类型',
+                '期初余额', '损益结转金额']
     for c, h in enumerate(headers1, 1):
         cell = ws1.cell(row=1, column=c, value=h)
         cell.font = header_font_white
@@ -1027,11 +1046,25 @@ def _export_standardized_workbook(project_dir: str, report: dict):
                     ss_name = sk
                     break
         ws1.cell(row=row, column=7, value=ss_name or sheet_label).border = thin_border
+        # v0.2 (2026-06-01): 写入辅助核算三件套 + 路径/重分类
+        ws1.cell(row=row, column=8, value=str(s.get('auxiliary_type', ''))).border = thin_border
+        ws1.cell(row=row, column=9, value=str(s.get('auxiliary_code', ''))).border = thin_border
+        aux_name_v = s.get('auxiliary_name') or s.get('counterparty') or name
+        ws1.cell(row=row, column=10, value=str(aux_name_v)).border = thin_border
+        ws1.cell(row=row, column=11, value=str(s.get('account_full_path', ''))).border = thin_border
+        ws1.cell(row=row, column=12, value=str(s.get('standard_level1', ''))).border = thin_border
+        ws1.cell(row=row, column=13, value=str(s.get('data_type', ''))).border = thin_border
+        c14 = ws1.cell(row=row, column=14, value=s.get('opening_balance', 0) or 0)
+        c14.number_format = num_fmt
+        c14.border = thin_border
+        c15 = ws1.cell(row=row, column=15, value=s.get('pnl_carryover', 0) or 0)
+        c15.number_format = num_fmt
+        c15.border = thin_border
         row += 1
 
-    ws1.auto_filter.ref = f'A1:G{row-1}'
-    for c in range(1, 8):
-        ws1.column_dimensions[get_column_letter(c)].width = [12, 30, 16, 6, 8, 14, 25][c-1]
+    ws1.auto_filter.ref = f'A1:O{row-1}'
+    for c in range(1, 16):
+        ws1.column_dimensions[get_column_letter(c)].width = [12, 30, 16, 6, 8, 14, 25, 10, 16, 30, 24, 18, 10, 16, 14][c-1]
 
     # ── Sheet 2: 资产负债表（标准化） ──
     ws2 = wb.create_sheet('资产负债表（标准化）')
@@ -1138,7 +1171,9 @@ def _export_standardized_workbook(project_dir: str, report: dict):
 
     # ── Sheet 3.5: 序时账（标准化·往来科目摘要） ──
     ws35 = wb.create_sheet('序时账（往来科目摘要）')
-    j_headers = ['日期', '凭证号', '科目编码', '科目名称', '摘要', '借方金额', '贷方金额']
+    # v0.2 (2026-06-01): 增加往来单位/部门/项目/银行账号列 — 供 Phase 3 匹配
+    j_headers = ['日期', '凭证号', '科目编码', '科目名称', '摘要', '借方金额', '贷方金额',
+                 '往来单位', '部门', '项目', '银行账号']
     for c, h in enumerate(j_headers, 1):
         cell = ws35.cell(row=1, column=c, value=h)
         cell.font = header_font_white
@@ -1172,10 +1207,15 @@ def _export_standardized_workbook(project_dir: str, report: dict):
         c7 = ws35.cell(row=row, column=7, value=e.get('credit_amount', 0) or 0)
         c7.number_format = num_fmt
         c7.border = thin_border
+        # v0.2 (2026-06-01): 写入往来单位/部门/项目/银行账号
+        ws35.cell(row=row, column=8, value=str(e.get('customer_supplier', ''))[:80]).border = thin_border
+        ws35.cell(row=row, column=9, value=str(e.get('department', ''))[:30]).border = thin_border
+        ws35.cell(row=row, column=10, value=str(e.get('project', ''))[:30]).border = thin_border
+        ws35.cell(row=row, column=11, value=str(e.get('bank_account', ''))[:50]).border = thin_border
         row += 1
 
-    ws35.auto_filter.ref = f'A1:G{row-1}'
-    for c, w in enumerate([12, 14, 12, 25, 50, 14, 14], 1):
+    ws35.auto_filter.ref = f'A1:K{row-1}'
+    for c, w in enumerate([12, 14, 12, 25, 50, 14, 14, 30, 12, 12, 25], 1):
         ws35.column_dimensions[get_column_letter(c)].width = w
     ws35.freeze_panes = 'A2'
 

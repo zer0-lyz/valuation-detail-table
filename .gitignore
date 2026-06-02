@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+*.bak
+*.bak.*
+*.bak.xlsx
+.v0.bak.*
 .DS_Store
 ._*
 .idea/
@@ -11,3 +15,12 @@ build/
 financial-normalizer/output/
 valuation-detail-table/scripts/poppler-*/
 valuation-detail-table/scripts/Release-*/
+
+# 项目级工作文件 — 由 financial-normalizer guess/apply 在项目目录生成,
+# 命名格式: <源文件名>_<时间戳>_mapping.json
+# 包含项目级 guess/apply 工作文件, 不能进 skill 仓库
+mapping_configs/
+**/mapping_configs/
+**/mapping_overrides.json
+**/sample_mappings/
+**/test_data/
